@@ -55,3 +55,30 @@ rewriteSidecar:
         );
     }
 }
+
+#[test]
+fn rejects_base_paths_that_could_break_javascript_string_literals() {
+    for base_path in [
+        "/regions/region:shen'zhen",
+        "/regions/region:\"shenzhen",
+        "/regions/region:shen\u{2028}zhen",
+    ] {
+        let yaml = format!(
+            r#"
+client:
+  basePath: |-
+    {base_path}
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    enabledExtensions: [ks-console-embed]
+"#
+        );
+        assert!(
+            EffectiveConfig::from_yaml(&yaml).is_err(),
+            "unsafe base path should fail: {base_path:?}"
+        );
+    }
+}

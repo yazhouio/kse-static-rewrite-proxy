@@ -22,11 +22,11 @@ use tracing::{error, info};
 
 use crate::admin::AdminApp;
 use crate::config::EffectiveConfig;
-use crate::literal::StreamingLiteralRewriter;
+use crate::literal::StreamingRewritePipeline;
 use crate::metrics::Metrics;
 use crate::rewrite::{RewriteDecision, RewritePolicy};
 
-const REWRITE_RULE_VERSION: &str = "v1";
+const REWRITE_RULE_VERSION: &str = "v10";
 const COMPRESSION_LEVEL: u32 = 6;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -47,7 +47,7 @@ pub struct RequestContext {
     path: String,
     extension: Option<String>,
     decision: RewriteDecision,
-    rewriter: Option<StreamingLiteralRewriter>,
+    rewriter: Option<StreamingRewritePipeline>,
     active_permit: Option<OwnedSemaphorePermit>,
     client_if_none_match: Option<HeaderValue>,
     suppress_body: bool,
@@ -198,16 +198,69 @@ impl ProxyHttp for KseRewriteProxy {
             if !self.admit_rewrite(session, ctx).await? {
                 return Ok(true);
             }
+            let static_source = b"/extensions-static/";
+            let static_replacement =
+                format!("{}/extensions-static/", self.config.base_path()).into_bytes();
+            let router_source = b"basename: \"\".concat(webPrefix, \"/consolev3\")";
+            let router_replacement = format!(
+                "basename: \"{}/\".concat(webPrefix, \"/consolev3\")",
+                self.config.base_path()
+            )
+            .into_bytes();
+            let escaped_router_source = b"basename: \\\"\\\".concat(webPrefix, \\\"/consolev3\\\")";
+            let escaped_router_replacement = format!(
+                "basename: \\\"{}/\\\".concat(webPrefix, \\\"/consolev3\\\")",
+                self.config.base_path()
+            )
+            .into_bytes();
+            let api_source = b"return requestURL.replace(/\\\\/\\\\/+/, '/');";
+            let api_replacement = format!(
+                "return requestURL.toLowerCase().startsWith('http://') || requestURL.toLowerCase().startsWith('https://') || requestURL.startsWith('//') ? requestURL : (requestURL.replace(/\\\\/\\\\/+/, '/') === '{}' || requestURL.replace(/\\\\/\\\\/+/, '/').startsWith('{}/') ? requestURL.replace(/\\\\/\\\\/+/, '/') : '{}/'.concat(requestURL.replace(/\\\\/\\\\/+/, '/').replace(/^\\\\/+/, '')));",
+                self.config.base_path(),
+                self.config.base_path(),
+                self.config.base_path()
+            )
+            .into_bytes();
+            let create_url_source = b"return \"/\".concat(path.trimLeft('/'));";
+            let create_url_replacement =
+                b"return path.startsWith('/') ? path : \"/\".concat(path);";
+            let escaped_create_url_source = b"return \\\"/\\\".concat(path.trimLeft('/'));";
+            let escaped_create_url_replacement =
+                b"return path.startsWith('/') ? path : \\\"/\\\".concat(path);";
+            let create_url_http_source = b"if (path.startsWith('http')) {";
+            let create_url_http_replacement = b"if (path.toLowerCase().startsWith('http://') || path.toLowerCase().startsWith('https://')) {";
             ctx.rewriter = Some(
-                StreamingLiteralRewriter::new(
-                    &source,
-                    &replacement,
+                StreamingRewritePipeline::new_with_exact(
+                    [
+                        (source.as_slice(), replacement.as_slice()),
+                        (static_source.as_slice(), static_replacement.as_slice()),
+                    ],
+                    [
+                        (router_source.as_slice(), router_replacement.as_slice()),
+                        (
+                            escaped_router_source.as_slice(),
+                            escaped_router_replacement.as_slice(),
+                        ),
+                        (api_source.as_slice(), api_replacement.as_slice()),
+                        (
+                            create_url_source.as_slice(),
+                            create_url_replacement.as_slice(),
+                        ),
+                        (
+                            escaped_create_url_source.as_slice(),
+                            escaped_create_url_replacement.as_slice(),
+                        ),
+                        (
+                            create_url_http_source.as_slice(),
+                            create_url_http_replacement.as_slice(),
+                        ),
+                    ],
                     self.config.max_decoded_bytes(),
                 )
                 .map_err(|cause| {
                     Error::because(
                         ErrorType::InternalError,
-                        "failed to initialize literal rewriter",
+                        "failed to initialize rewrite pipeline",
                         cause,
                     )
                 })?,
@@ -563,7 +616,7 @@ mod tests {
         let first = derive_etag(b"\"upstream\"", "/regions/region:shenzhen", "embed");
         let second = derive_etag(b"\"upstream\"", "/regions/region:beijing", "embed");
         assert_ne!(first, second);
-        assert!(first.starts_with("W/\"kserw-v1-"));
+        assert!(first.starts_with("W/\"kserw-v10-"));
     }
 
     #[test]

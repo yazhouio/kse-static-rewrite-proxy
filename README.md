@@ -35,6 +35,8 @@ The response body is rewritten as a stream:
 {basePath}/extensions-static/{extension}/dist/v3dist/
 ```
 
+Some legacy extension bundles construct locale URLs at runtime from a standalone `/extensions-static/` string plus the extension name. Within the same eligible, allowlisted V3 text response only, the pipeline also rewrites that standalone root to `{basePath}/extensions-static/`. It adjusts the legacy Console V3 React Router `basename` expression so browser history retains `{basePath}`, and prefixes relative API URLs produced by the bundle's centralized request normalizer. That keeps isolated authentication cookies usable without changing their `Path`. These rules remain scoped to the selected extension response; they do not rewrite API response bodies or binary assets.
+
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
 For eligible text assets the sidecar asks the BFF for an identity response, performs the bounded literal rewrite, then lets Pingora negotiate downstream gzip, Brotli, or Zstandard compression from the browser's original `Accept-Encoding` header.

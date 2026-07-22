@@ -246,7 +246,7 @@ fn normalize_base_path(input: &str) -> Result<String, ConfigError> {
     }
     if contains_forbidden_character(input) {
         return Err(invalid_base_path(
-            "must not contain query, hash, backslash, or control characters",
+            "must not contain query, hash, quotes, backslash, line separators, or control characters",
         ));
     }
     validate_percent_encoding(input)?;
@@ -278,9 +278,12 @@ fn invalid_base_path(message: &str) -> ConfigError {
 }
 
 fn contains_forbidden_character(value: &str) -> bool {
-    value
-        .chars()
-        .any(|character| matches!(character, '?' | '#' | '\\') || character.is_control())
+    value.chars().any(|character| {
+        matches!(
+            character,
+            '?' | '#' | '\'' | '"' | '\\' | '\u{2028}' | '\u{2029}'
+        ) || character.is_control()
+    })
 }
 
 fn has_dot_segment(value: &str) -> bool {
