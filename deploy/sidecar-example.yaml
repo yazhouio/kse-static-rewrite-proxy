@@ -1,0 +1,75 @@
+# Illustrative strategic-merge content. Adapt it to the real workload through Kustomize;
+# it is not a complete standalone manifest for direct kubectl apply.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ks-console
+  namespace: kubesphere-system
+spec:
+  template:
+    metadata:
+      labels:
+        app: ks-console
+    spec:
+      containers:
+        - name: ks-console
+          ports:
+            - name: bff-internal
+              containerPort: 8000
+        - name: static-rewrite-proxy
+          image: REPLACE_WITH_YOUR_REGISTRY/kse-static-rewrite-proxy:0.1.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KSE_REWRITE_CONFIG
+              value: /etc/kse-console/config.yaml
+            - name: RUST_LOG
+              value: info
+          ports:
+            - name: console-http
+              containerPort: 8080
+            - name: admin-http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin-http
+            periodSeconds: 5
+            timeoutSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin-http
+            periodSeconds: 10
+            timeoutSeconds: 1
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+          volumeMounts:
+            - name: ks-console-config
+              mountPath: /etc/kse-console
+              readOnly: true
+---
+# Point the existing Console Service at the sidecar. Keep the Ingress unchanged.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ks-console
+  namespace: kubesphere-system
+spec:
+  selector:
+    app: ks-console
+  ports:
+    - name: http
+      port: 80
+      targetPort: console-http

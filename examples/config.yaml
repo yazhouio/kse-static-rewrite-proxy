@@ -1,0 +1,13 @@
+client:
+  basePath: /regions/region:shenzhen
+
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    enabledExtensions:
+      - ks-console-embed
+    maxDecodedBytes: 20971520
+    maxConcurrent: 4
+    maxQueued: 32
