@@ -9,6 +9,11 @@ pre-commit:
     - name: Run Clippy
       run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+commit-msg:
+  scripts:
+    "check-conventional-commit.sh":
+      runner: sh
+
 pre-push:
   jobs:
     - name: Run tests

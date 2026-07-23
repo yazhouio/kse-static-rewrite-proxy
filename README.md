@@ -89,7 +89,9 @@ Install [Lefthook](https://lefthook.dev/installation/) and enable the repository
 lefthook install
 ```
 
-Commits run formatting and Clippy checks in parallel. Pushes run the complete test suite.
+Commits run formatting and Clippy checks in parallel, then validate the commit
+message against the Conventional Commits format. Pushes run the complete test
+suite.
 
 Start a KSE Console BFF on port `18000`, copy the example config, change the sidecar upstream to `http://127.0.0.1:18000`, and run:
 
