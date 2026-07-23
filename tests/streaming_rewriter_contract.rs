@@ -1,4 +1,6 @@
-use kse_static_rewrite_proxy::literal::{StreamingLiteralRewriter, StreamingRewritePipeline};
+use kse_static_rewrite_proxy::literal::{
+    RewriteError, StreamingLiteralRewriter, StreamingRewritePipeline,
+};
 
 const SOURCE: &[u8] = b"/extensions-static/ks-console-embed/dist/v3dist/";
 const REPLACEMENT: &[u8] =
@@ -35,6 +37,46 @@ fn replaces_across_every_chunk_boundary_without_double_prefixing() {
         output.extend(rewriter.finish().expect("finish stream"));
         assert_eq!(output, expected, "split at byte {split}");
     }
+}
+
+#[test]
+fn validates_utf8_sequences_split_across_every_byte_boundary() {
+    let input = "前缀:/extensions-static/文件.js".as_bytes();
+    let expected = "前缀:/regions/region:shenzhen/extensions-static/文件.js".as_bytes();
+
+    for chunk_size in 1..=input.len() {
+        let mut rewriter =
+            StreamingLiteralRewriter::new(STATIC_SOURCE, STATIC_REPLACEMENT, 1024).unwrap();
+        let mut output = Vec::new();
+        for chunk in input.chunks(chunk_size) {
+            output.extend(rewriter.push(chunk).expect("valid UTF-8 chunk"));
+        }
+        output.extend(rewriter.finish().expect("complete UTF-8 stream"));
+        assert_eq!(output, expected, "chunk size {chunk_size}");
+    }
+}
+
+#[test]
+fn rejects_invalid_utf8_after_an_incomplete_sequence() {
+    let mut rewriter =
+        StreamingLiteralRewriter::new(STATIC_SOURCE, STATIC_REPLACEMENT, 1024).unwrap();
+
+    assert_eq!(rewriter.push(&[0xE4]), Ok(Vec::new()));
+    assert_eq!(rewriter.push(b"A"), Err(RewriteError::InvalidUtf8));
+    assert_eq!(rewriter.push(&[0xB8, 0xAD]), Err(RewriteError::InvalidUtf8));
+}
+
+#[test]
+fn rewrites_dense_adjacent_literals_without_reprocessing_output() {
+    let mut prefix_rewriter = StreamingLiteralRewriter::new(b"x", b"px", 1024).unwrap();
+    let mut prefix_output = prefix_rewriter.push(b"xxxx").unwrap();
+    prefix_output.extend(prefix_rewriter.finish().unwrap());
+    assert_eq!(prefix_output, b"pxpxpxpx");
+
+    let mut exact_rewriter = StreamingLiteralRewriter::new_exact(b"ab", b"z", 1024).unwrap();
+    let mut exact_output = exact_rewriter.push(b"ababab").unwrap();
+    exact_output.extend(exact_rewriter.finish().unwrap());
+    assert_eq!(exact_output, b"zzz");
 }
 
 #[test]

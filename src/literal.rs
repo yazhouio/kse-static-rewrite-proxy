@@ -158,8 +158,12 @@ impl StreamingRewritePipeline {
             });
         }
 
-        let mut output = input.to_vec();
-        for rewriter in &mut self.rewriters {
+        let (first, remaining) = self
+            .rewriters
+            .split_first_mut()
+            .expect("a rewrite pipeline always contains at least one rule");
+        let mut output = first.push(input)?;
+        for rewriter in remaining {
             output = rewriter.push(&output)?;
         }
         Ok(output)
@@ -183,7 +187,7 @@ impl StreamingRewritePipeline {
 
 #[derive(Debug)]
 struct StreamingIdentifierPatternRewriter {
-    prefix: Vec<u8>,
+    prefix_finder: memmem::Finder<'static>,
     suffix: Vec<u8>,
     replacement_prefix: Vec<u8>,
     pending: Vec<u8>,
@@ -204,14 +208,14 @@ impl StreamingIdentifierPatternRewriter {
         suffix: impl AsRef<[u8]>,
         replacement_prefix: impl AsRef<[u8]>,
     ) -> Result<Self, RewriteError> {
-        let prefix = prefix.as_ref().to_vec();
-        let suffix = suffix.as_ref().to_vec();
+        let prefix = prefix.as_ref();
+        let suffix = suffix.as_ref();
         if prefix.is_empty() || suffix.is_empty() {
             return Err(RewriteError::EmptySource);
         }
         Ok(Self {
-            prefix,
-            suffix,
+            prefix_finder: memmem::Finder::new(prefix).into_owned(),
+            suffix: suffix.to_vec(),
             replacement_prefix: replacement_prefix.as_ref().to_vec(),
             pending: Vec::new(),
             previous_byte: None,
@@ -236,57 +240,65 @@ impl StreamingIdentifierPatternRewriter {
     }
 
     fn process_available(&mut self, end_of_stream: bool) -> Vec<u8> {
-        let mut output = Vec::new();
+        let prefix_len = self.prefix_finder.needle().len();
+        let mut output = Vec::with_capacity(self.pending.len());
+        let mut consumed = 0;
+        let mut previous_byte = self.previous_byte;
+
         loop {
-            let Some(position) = memmem::find(&self.pending, &self.prefix) else {
+            let Some(relative_position) = self.prefix_finder.find(&self.pending[consumed..]) else {
                 let emit_len = if end_of_stream {
-                    self.pending.len()
+                    self.pending.len() - consumed
                 } else {
-                    self.pending
-                        .len()
-                        .saturating_sub(self.prefix.len().saturating_sub(1))
+                    (self.pending.len() - consumed).saturating_sub(prefix_len.saturating_sub(1))
                 };
-                self.emit_pending(&mut output, emit_len);
+                if emit_len > 0 {
+                    let emitted = &self.pending[consumed..consumed + emit_len];
+                    previous_byte = emitted.last().copied();
+                    output.extend_from_slice(emitted);
+                    consumed += emit_len;
+                }
                 break;
             };
+            let position = consumed + relative_position;
 
-            if position > 0 {
-                self.emit_pending(&mut output, position);
+            if position > consumed {
+                let emitted = &self.pending[consumed..position];
+                previous_byte = emitted.last().copied();
+                output.extend_from_slice(emitted);
+                consumed = position;
                 continue;
             }
 
-            let preceded_by_identifier =
-                self.previous_byte.is_some_and(is_ascii_identifier_continue);
+            let preceded_by_identifier = previous_byte.is_some_and(is_ascii_identifier_continue);
             match if preceded_by_identifier {
                 IdentifierPatternMatch::NoMatch
             } else {
-                self.match_candidate(end_of_stream)
+                self.match_candidate(consumed, end_of_stream)
             } {
                 IdentifierPatternMatch::Match(matched_len) => {
                     output.extend_from_slice(&self.replacement_prefix);
-                    output.extend_from_slice(&self.pending[self.prefix.len()..matched_len]);
-                    self.previous_byte = self.pending.get(matched_len - 1).copied();
-                    self.pending.drain(..matched_len);
+                    output.extend_from_slice(
+                        &self.pending[consumed + prefix_len..consumed + matched_len],
+                    );
+                    previous_byte = self.pending.get(consumed + matched_len - 1).copied();
+                    consumed += matched_len;
                 }
                 IdentifierPatternMatch::NeedMore => break,
                 IdentifierPatternMatch::NoMatch => {
-                    self.emit_pending(&mut output, 1);
+                    output.push(self.pending[consumed]);
+                    previous_byte = Some(self.pending[consumed]);
+                    consumed += 1;
                 }
             }
         }
+        self.previous_byte = previous_byte;
+        self.pending.drain(..consumed);
         output
     }
 
-    fn emit_pending(&mut self, output: &mut Vec<u8>, len: usize) {
-        if len == 0 {
-            return;
-        }
-        self.previous_byte = self.pending.get(len - 1).copied();
-        output.extend(self.pending.drain(..len));
-    }
-
-    fn match_candidate(&self, end_of_stream: bool) -> IdentifierPatternMatch {
-        let mut cursor = self.prefix.len();
+    fn match_candidate(&self, start: usize, end_of_stream: bool) -> IdentifierPatternMatch {
+        let mut cursor = start + self.prefix_finder.needle().len();
         let Some(&first) = self.pending.get(cursor) else {
             return if end_of_stream {
                 IdentifierPatternMatch::NoMatch
@@ -326,7 +338,7 @@ impl StreamingIdentifierPatternRewriter {
                 IdentifierPatternMatch::NeedMore
             };
         }
-        IdentifierPatternMatch::Match(cursor + self.suffix.len())
+        IdentifierPatternMatch::Match(cursor + self.suffix.len() - start)
     }
 }
 
@@ -341,7 +353,7 @@ fn is_ascii_identifier_continue(byte: u8) -> bool {
 
 #[derive(Debug)]
 pub struct StreamingLiteralRewriter {
-    source: Vec<u8>,
+    finder: memmem::Finder<'static>,
     replacement: Vec<u8>,
     inserted_prefix: Option<Vec<u8>>,
     max_bytes: usize,
@@ -358,19 +370,19 @@ impl StreamingLiteralRewriter {
         replacement: impl AsRef<[u8]>,
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
-        let source = source.as_ref().to_vec();
-        let replacement = replacement.as_ref().to_vec();
+        let source = source.as_ref();
+        let replacement = replacement.as_ref();
         if source.is_empty() {
             return Err(RewriteError::EmptySource);
         }
         let inserted_prefix = replacement
-            .strip_suffix(source.as_slice())
+            .strip_suffix(source)
             .ok_or(RewriteError::InvalidReplacement)?
             .to_vec();
 
         Ok(Self {
-            source,
-            replacement,
+            finder: memmem::Finder::new(source).into_owned(),
+            replacement: replacement.to_vec(),
             inserted_prefix: Some(inserted_prefix),
             max_bytes,
             total_bytes: 0,
@@ -386,12 +398,12 @@ impl StreamingLiteralRewriter {
         replacement: impl AsRef<[u8]>,
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
-        let source = source.as_ref().to_vec();
+        let source = source.as_ref();
         if source.is_empty() {
             return Err(RewriteError::EmptySource);
         }
         Ok(Self {
-            source,
+            finder: memmem::Finder::new(source).into_owned(),
             replacement: replacement.as_ref().to_vec(),
             inserted_prefix: None,
             max_bytes,
@@ -435,13 +447,42 @@ impl StreamingLiteralRewriter {
     }
 
     fn validate_utf8(&mut self, input: &[u8]) -> Result<(), RewriteError> {
-        let mut bytes = std::mem::take(&mut self.utf8_tail);
-        bytes.extend_from_slice(input);
-        match std::str::from_utf8(&bytes) {
-            Ok(_) => Ok(()),
+        if self.utf8_tail.is_empty() {
+            return Self::validate_utf8_slice(input, &mut self.utf8_tail);
+        }
+
+        let expected_len = utf8_sequence_len(self.utf8_tail[0]);
+        let missing_len = expected_len - self.utf8_tail.len();
+        let boundary_input_len = input.len().min(missing_len);
+        let mut boundary = [0; 4];
+        let tail_len = self.utf8_tail.len();
+        boundary[..tail_len].copy_from_slice(&self.utf8_tail);
+        boundary[tail_len..tail_len + boundary_input_len]
+            .copy_from_slice(&input[..boundary_input_len]);
+        let boundary_len = tail_len + boundary_input_len;
+
+        match std::str::from_utf8(&boundary[..boundary_len]) {
+            Ok(_) => {
+                self.utf8_tail.clear();
+                Self::validate_utf8_slice(&input[boundary_input_len..], &mut self.utf8_tail)
+            }
             Err(error) if error.error_len().is_none() => {
                 self.utf8_tail
-                    .extend_from_slice(&bytes[error.valid_up_to()..]);
+                    .extend_from_slice(&input[..boundary_input_len]);
+                Ok(())
+            }
+            Err(_) => {
+                self.utf8_tail.clear();
+                Err(RewriteError::InvalidUtf8)
+            }
+        }
+    }
+
+    fn validate_utf8_slice(input: &[u8], utf8_tail: &mut Vec<u8>) -> Result<(), RewriteError> {
+        match std::str::from_utf8(input) {
+            Ok(_) => Ok(()),
+            Err(error) if error.error_len().is_none() => {
+                utf8_tail.extend_from_slice(&input[error.valid_up_to()..]);
                 Ok(())
             }
             Err(_) => Err(RewriteError::InvalidUtf8),
@@ -449,68 +490,94 @@ impl StreamingLiteralRewriter {
     }
 
     fn process_available(&mut self, end_of_stream: bool) -> Vec<u8> {
-        let mut output = Vec::new();
-        while let Some(position) = memmem::find(&self.pending, &self.source) {
-            let before_match = self.pending[..position].to_vec();
-            let already_prefixed = self.original_input_ends_with_prefix(&before_match);
+        let source = self.finder.needle();
+        let source_len = source.len();
+        let inserted_prefix = self.inserted_prefix.as_deref();
+        let mut input_history = std::mem::take(&mut self.input_history);
+        let mut output = Vec::with_capacity(self.pending.len());
+        let mut consumed = 0;
 
-            output.extend_from_slice(&before_match);
-            self.remember_input(&before_match);
+        while let Some(relative_position) = self.finder.find(&self.pending[consumed..]) {
+            let position = consumed + relative_position;
+            let before_match = &self.pending[consumed..position];
+            let already_prefixed =
+                original_input_ends_with_prefix(inserted_prefix, &input_history, before_match);
+            output.extend_from_slice(before_match);
+            remember_input(inserted_prefix, &mut input_history, before_match);
             if already_prefixed {
-                output.extend_from_slice(&self.source);
+                output.extend_from_slice(source);
             } else {
                 output.extend_from_slice(&self.replacement);
             }
-            let source = self.source.clone();
-            self.remember_input(&source);
-            self.pending.drain(..position + self.source.len());
+            remember_input(inserted_prefix, &mut input_history, source);
+            consumed = position + source_len;
         }
 
         let emit_len = if end_of_stream {
-            self.pending.len()
+            self.pending.len() - consumed
         } else {
-            self.pending
-                .len()
-                .saturating_sub(self.source.len().saturating_sub(1))
+            (self.pending.len() - consumed).saturating_sub(source_len.saturating_sub(1))
         };
         if emit_len > 0 {
-            let emitted = self.pending[..emit_len].to_vec();
-            output.extend_from_slice(&emitted);
-            self.remember_input(&emitted);
-            self.pending.drain(..emit_len);
+            let emitted = &self.pending[consumed..consumed + emit_len];
+            output.extend_from_slice(emitted);
+            remember_input(inserted_prefix, &mut input_history, emitted);
+            consumed += emit_len;
         }
+        self.input_history = input_history;
+        self.pending.drain(..consumed);
         output
     }
+}
 
-    fn original_input_ends_with_prefix(&self, before_match: &[u8]) -> bool {
-        let Some(inserted_prefix) = self.inserted_prefix.as_ref() else {
-            return false;
-        };
-        if inserted_prefix.is_empty() {
-            return true;
-        }
-        if before_match.len() >= inserted_prefix.len() {
-            return before_match.ends_with(inserted_prefix);
-        }
+fn utf8_sequence_len(first_byte: u8) -> usize {
+    match first_byte {
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => unreachable!("an incomplete UTF-8 tail always starts with a valid leading byte"),
+    }
+}
 
-        let missing = inserted_prefix.len() - before_match.len();
-        self.input_history.len() >= missing
-            && self.input_history[self.input_history.len() - missing..]
-                == inserted_prefix[..missing]
-            && before_match == &inserted_prefix[missing..]
+fn original_input_ends_with_prefix(
+    inserted_prefix: Option<&[u8]>,
+    input_history: &[u8],
+    before_match: &[u8],
+) -> bool {
+    let Some(inserted_prefix) = inserted_prefix else {
+        return false;
+    };
+    if inserted_prefix.is_empty() {
+        return true;
+    }
+    if before_match.len() >= inserted_prefix.len() {
+        return before_match.ends_with(inserted_prefix);
     }
 
-    fn remember_input(&mut self, input: &[u8]) {
-        let Some(inserted_prefix) = self.inserted_prefix.as_ref() else {
-            return;
-        };
-        if inserted_prefix.is_empty() {
-            return;
-        }
-        self.input_history.extend_from_slice(input);
-        if self.input_history.len() > inserted_prefix.len() {
-            let remove = self.input_history.len() - inserted_prefix.len();
-            self.input_history.drain(..remove);
-        }
+    let missing = inserted_prefix.len() - before_match.len();
+    input_history.len() >= missing
+        && input_history[input_history.len() - missing..] == inserted_prefix[..missing]
+        && before_match == &inserted_prefix[missing..]
+}
+
+fn remember_input(inserted_prefix: Option<&[u8]>, input_history: &mut Vec<u8>, input: &[u8]) {
+    let Some(inserted_prefix) = inserted_prefix else {
+        return;
+    };
+    let history_len = inserted_prefix.len();
+    if history_len == 0 {
+        return;
     }
+    if input.len() >= history_len {
+        input_history.clear();
+        input_history.extend_from_slice(&input[input.len() - history_len..]);
+        return;
+    }
+
+    let remove = (input_history.len() + input.len()).saturating_sub(history_len);
+    if remove > 0 {
+        input_history.copy_within(remove.., 0);
+        input_history.truncate(input_history.len() - remove);
+    }
+    input_history.extend_from_slice(input);
 }
