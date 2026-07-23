@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v12";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v16";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewriteDecision {
@@ -139,6 +139,34 @@ pub(crate) fn build_response_rewriter(
         identifier_rules,
         max_bytes,
     )
+    .and_then(|pipeline| {
+        pipeline.with_identifier_template_patterns([
+            (
+                b"\"/\".concat(".to_vec(),
+                b".trimLeft(\"/\"))".to_vec(),
+                format!(
+                    "({{identifier}}===\"{base_path}\"||{{identifier}}.startsWith(\"{base_path}/\")?{{identifier}}:\"{base_path}/\".concat({{identifier}}.replace(/^\\/+/,\"\")))"
+                )
+                .into_bytes(),
+            ),
+            (
+                b"return\"/\".concat(".to_vec(),
+                b".trimLeft(\"/\"))".to_vec(),
+                format!(
+                    "return({{identifier}}===\"{base_path}\"||{{identifier}}.startsWith(\"{base_path}/\")?{{identifier}}:\"{base_path}/\".concat({{identifier}}.replace(/^\\/+/,\"\")))"
+                )
+                .into_bytes(),
+            ),
+            (
+                b")),".to_vec(),
+                b".replace(/\\/\\/+/,\"/\")}".to_vec(),
+                format!(
+                    ")),({{identifier}}={{identifier}}.replace(/\\/\\/+/,\"/\"),{{identifier}}===\"{base_path}\"||{{identifier}}.startsWith(\"{base_path}/\")?{{identifier}}:\"{base_path}/\".concat({{identifier}}.replace(/^\\/+/,\"\")))}}"
+                )
+                .into_bytes(),
+            ),
+        ])
+    })
 }
 
 #[cfg(test)]
@@ -184,6 +212,66 @@ mod tests {
                 expected.as_bytes(),
                 "second pass after byte {split}"
             );
+        }
+    }
+
+    #[test]
+    fn response_rewriter_prefixes_minified_request_url_normalizers() {
+        let input = concat!(
+            r#"function H(e){return e.startsWith("http")?e:"/".concat(e.trimLeft("/"))}"#,
+            r#"function g(r){return function(e){if(e.startsWith("http"))return e;"#,
+            r#"return"/".concat(e.trimLeft("/"))}(r)}"#
+        );
+        let expected = concat!(
+            r#"function H(e){return e.startsWith("http")?e:(e==="/regions/region:shenzhen"||e.startsWith("/regions/region:shenzhen/")?e:"/regions/region:shenzhen/".concat(e.replace(/^\/+/,"")))}"#,
+            r#"function g(r){return function(e){if(e.startsWith("http"))return e;"#,
+            r#"return(e==="/regions/region:shenzhen"||e.startsWith("/regions/region:shenzhen/")?e:"/regions/region:shenzhen/".concat(e.replace(/^\/+/,"")))}(r)}"#
+        );
+
+        for split in 0..=input.len() {
+            let mut pipeline =
+                build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
+                    .expect("valid rewrite rules");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+        }
+    }
+
+    #[test]
+    fn response_rewriter_preserves_base_path_after_minified_cluster_url_normalization() {
+        let input = concat!(
+            r#"function f(e){var t=e,a=t.match(o);return "#,
+            r#"a&&(t="/".concat(a[2])),t.replace(/\/\/+/,"/")}"#
+        );
+        let expected = concat!(
+            r#"function f(e){var t=e,a=t.match(o);return "#,
+            r#"a&&(t="/".concat(a[2])),(t=t.replace(/\/\/+/,"/"),"#,
+            r#"t==="/regions/region:shenzhen"||t.startsWith("/regions/region:shenzhen/")?"#,
+            r#"t:"/regions/region:shenzhen/".concat(t.replace(/^\/+/,"")))}"#
+        );
+
+        for split in 0..=input.len() {
+            let mut pipeline =
+                build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
+                    .expect("valid rewrite rules");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
         }
     }
 }

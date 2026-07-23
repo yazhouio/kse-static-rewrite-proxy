@@ -127,6 +127,28 @@ impl StreamingRewritePipeline {
         Ok(pipeline)
     }
 
+    pub(crate) fn with_identifier_template_patterns<II, IP, IS, IT>(
+        mut self,
+        identifier_rules: II,
+    ) -> Result<Self, RewriteError>
+    where
+        II: IntoIterator<Item = (IP, IS, IT)>,
+        IP: AsRef<[u8]>,
+        IS: AsRef<[u8]>,
+        IT: AsRef<[u8]>,
+    {
+        self.rewriters.extend(
+            identifier_rules
+                .into_iter()
+                .map(|(prefix, suffix, template)| {
+                    StreamingIdentifierPatternRewriter::new_template(prefix, suffix, template)
+                        .map(StreamingRewriter::IdentifierPattern)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(self)
+    }
+
     fn from_rewriters(
         rewriters: Vec<StreamingRewriter>,
         max_bytes: usize,
@@ -189,10 +211,16 @@ impl StreamingRewritePipeline {
 struct StreamingIdentifierPatternRewriter {
     prefix_finder: memmem::Finder<'static>,
     suffix: Vec<u8>,
-    replacement_prefix: Vec<u8>,
+    replacement: IdentifierReplacement,
     pending: Vec<u8>,
     previous_byte: Option<u8>,
     finished: bool,
+}
+
+#[derive(Debug)]
+enum IdentifierReplacement {
+    Prefix(Vec<u8>),
+    Template(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -216,7 +244,27 @@ impl StreamingIdentifierPatternRewriter {
         Ok(Self {
             prefix_finder: memmem::Finder::new(prefix).into_owned(),
             suffix: suffix.to_vec(),
-            replacement_prefix: replacement_prefix.as_ref().to_vec(),
+            replacement: IdentifierReplacement::Prefix(replacement_prefix.as_ref().to_vec()),
+            pending: Vec::new(),
+            previous_byte: None,
+            finished: false,
+        })
+    }
+
+    fn new_template(
+        prefix: impl AsRef<[u8]>,
+        suffix: impl AsRef<[u8]>,
+        template: impl AsRef<[u8]>,
+    ) -> Result<Self, RewriteError> {
+        let prefix = prefix.as_ref();
+        let suffix = suffix.as_ref();
+        if prefix.is_empty() || suffix.is_empty() {
+            return Err(RewriteError::EmptySource);
+        }
+        Ok(Self {
+            prefix_finder: memmem::Finder::new(prefix).into_owned(),
+            suffix: suffix.to_vec(),
+            replacement: IdentifierReplacement::Template(template.as_ref().to_vec()),
             pending: Vec::new(),
             previous_byte: None,
             finished: false,
@@ -277,11 +325,25 @@ impl StreamingIdentifierPatternRewriter {
                 self.match_candidate(consumed, end_of_stream)
             } {
                 IdentifierPatternMatch::Match(matched_len) => {
-                    output.extend_from_slice(&self.replacement_prefix);
-                    output.extend_from_slice(
-                        &self.pending[consumed + prefix_len..consumed + matched_len],
-                    );
-                    previous_byte = self.pending.get(consumed + matched_len - 1).copied();
+                    let identifier_start = consumed + prefix_len;
+                    let identifier_end = self.pending[identifier_start..]
+                        .iter()
+                        .position(|byte| !is_ascii_identifier_continue(*byte))
+                        .map(|relative| identifier_start + relative)
+                        .expect("a matched identifier is followed by a suffix");
+                    let identifier = &self.pending[identifier_start..identifier_end];
+                    match &self.replacement {
+                        IdentifierReplacement::Prefix(replacement_prefix) => {
+                            output.extend_from_slice(replacement_prefix);
+                            output.extend_from_slice(
+                                &self.pending[identifier_start..consumed + matched_len],
+                            );
+                        }
+                        IdentifierReplacement::Template(template) => {
+                            render_identifier_template(&mut output, template, identifier);
+                        }
+                    }
+                    previous_byte = output.last().copied();
                     consumed += matched_len;
                 }
                 IdentifierPatternMatch::NeedMore => break,
@@ -340,6 +402,18 @@ impl StreamingIdentifierPatternRewriter {
         }
         IdentifierPatternMatch::Match(cursor + self.suffix.len() - start)
     }
+}
+
+fn render_identifier_template(output: &mut Vec<u8>, template: &[u8], identifier: &[u8]) {
+    const MARKER: &[u8] = b"{identifier}";
+    let finder = memmem::Finder::new(MARKER);
+    let mut consumed = 0;
+    for position in finder.find_iter(template) {
+        output.extend_from_slice(&template[consumed..position]);
+        output.extend_from_slice(identifier);
+        consumed = position + MARKER.len();
+    }
+    output.extend_from_slice(&template[consumed..]);
 }
 
 // Webpack and Terser emit ASCII binding identifiers; keep this matcher scoped to that output.
