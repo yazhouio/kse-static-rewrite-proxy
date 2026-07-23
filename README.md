@@ -71,6 +71,14 @@ Rewritten responses remove length, digest, range, and upstream representation va
 
 ## Local development
 
+Install [Lefthook](https://lefthook.dev/installation/) and enable the repository hooks once:
+
+```bash
+lefthook install
+```
+
+Commits run formatting and Clippy checks in parallel. Pushes run the complete test suite.
+
 Start a KSE Console BFF on port `18000`, copy the example config, change the sidecar upstream to `http://127.0.0.1:18000`, and run:
 
 ```bash

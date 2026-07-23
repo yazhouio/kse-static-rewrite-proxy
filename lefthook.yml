@@ -1,0 +1,15 @@
+min_version: 2.1.0
+
+pre-commit:
+  parallel: true
+  jobs:
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run Clippy
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+pre-push:
+  jobs:
+    - name: Run tests
+      run: cargo test --workspace --locked
