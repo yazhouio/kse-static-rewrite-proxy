@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v11";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v12";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewriteDecision {
@@ -87,26 +87,6 @@ pub(crate) fn build_response_rewriter(
     let static_replacement = format!("{base_path}/extensions-static/").into_bytes();
     let exact_rules = [
         (
-            b"basename: \"\".concat(webPrefix, \"/consolev3\")".to_vec(),
-            format!("basename: \"{base_path}/\".concat(webPrefix, \"/consolev3\")").into_bytes(),
-        ),
-        (
-            b"basename:\"\".concat(webPrefix,\"/consolev3\")".to_vec(),
-            format!("basename:\"{base_path}/\".concat(webPrefix,\"/consolev3\")").into_bytes(),
-        ),
-        (
-            b"basename: \\\"\\\".concat(webPrefix, \\\"/consolev3\\\")".to_vec(),
-            format!(
-                "basename: \\\"{base_path}/\\\".concat(webPrefix, \\\"/consolev3\\\")"
-            )
-            .into_bytes(),
-        ),
-        (
-            b"basename:\\\"\\\".concat(webPrefix,\\\"/consolev3\\\")".to_vec(),
-            format!("basename:\\\"{base_path}/\\\".concat(webPrefix,\\\"/consolev3\\\")")
-                .into_bytes(),
-        ),
-        (
             b"return requestURL.replace(/\\\\/\\\\/+/, '/');".to_vec(),
             format!(
                 "return requestURL.toLowerCase().startsWith('http://') || requestURL.toLowerCase().startsWith('https://') || requestURL.startsWith('//') ? requestURL : (requestURL.replace(/\\\\/\\\\/+/, '/') === '{base_path}' || requestURL.replace(/\\\\/\\\\/+/, '/').startsWith('{base_path}/') ? requestURL.replace(/\\\\/\\\\/+/, '/') : '{base_path}/'.concat(requestURL.replace(/\\\\/\\\\/+/, '/').replace(/^\\\\/+/, '')));"
@@ -127,13 +107,36 @@ pub(crate) fn build_response_rewriter(
                 .to_vec(),
         ),
     ];
+    let identifier_rules = [
+        (
+            b"basename: \"\".concat(".to_vec(),
+            b", \"/consolev3\")".to_vec(),
+            format!("basename: \"{base_path}/\".concat(").into_bytes(),
+        ),
+        (
+            b"basename:\"\".concat(".to_vec(),
+            b",\"/consolev3\")".to_vec(),
+            format!("basename:\"{base_path}/\".concat(").into_bytes(),
+        ),
+        (
+            b"basename: \\\"\\\".concat(".to_vec(),
+            b", \\\"/consolev3\\\")".to_vec(),
+            format!("basename: \\\"{base_path}/\\\".concat(").into_bytes(),
+        ),
+        (
+            b"basename:\\\"\\\".concat(".to_vec(),
+            b",\\\"/consolev3\\\")".to_vec(),
+            format!("basename:\\\"{base_path}/\\\".concat(").into_bytes(),
+        ),
+    ];
 
-    StreamingRewritePipeline::new_with_exact(
+    StreamingRewritePipeline::new_with_exact_and_identifier_patterns(
         [
             (source.to_vec(), replacement.to_vec()),
             (static_source, static_replacement),
         ],
         exact_rules,
+        identifier_rules,
         max_bytes,
     )
 }
@@ -148,17 +151,28 @@ mod tests {
 
     #[test]
     fn response_rewriter_handles_router_basename_variants_idempotently() {
-        let input = b"spaced=basename: \"\".concat(webPrefix, \"/consolev3\");compact=basename:\"\".concat(webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"\\\".concat(webPrefix, \\\"/consolev3\\\");escaped-compact=basename:\\\"\\\".concat(webPrefix,\\\"/consolev3\\\")";
-        let expected = b"spaced=basename: \"/regions/region:shenzhen/\".concat(webPrefix, \"/consolev3\");compact=basename:\"/regions/region:shenzhen/\".concat(webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"/regions/region:shenzhen/\\\".concat(webPrefix, \\\"/consolev3\\\");escaped-compact=basename:\\\"/regions/region:shenzhen/\\\".concat(webPrefix,\\\"/consolev3\\\")";
+        let long_identifier = format!("a{}", "b".repeat(128));
+        let input = format!(
+            "spaced=basename: \"\".concat(webPrefix, \"/consolev3\");compact=basename:\"\".concat(o,\"/consolev3\");escaped-spaced=basename: \\\"\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
+        );
+        let expected = format!(
+            "spaced=basename: \"/regions/region:shenzhen/\".concat(webPrefix, \"/consolev3\");compact=basename:\"/regions/region:shenzhen/\".concat(o,\"/consolev3\");escaped-spaced=basename: \\\"/regions/region:shenzhen/\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"/regions/region:shenzhen/\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
+        );
 
         for split in 0..=input.len() {
             let mut pipeline =
                 build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
                     .expect("valid rewrite rules");
-            let mut output = pipeline.push(&input[..split]).expect("first chunk");
-            output.extend(pipeline.push(&input[split..]).expect("second chunk"));
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
             output.extend(pipeline.finish().expect("finish stream"));
-            assert_eq!(output, expected, "split at byte {split}");
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass =
                 build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
@@ -166,7 +180,8 @@ mod tests {
             let mut idempotent_output = second_pass.push(&output).expect("second pass");
             idempotent_output.extend(second_pass.finish().expect("finish second pass"));
             assert_eq!(
-                idempotent_output, expected,
+                idempotent_output,
+                expected.as_bytes(),
                 "second pass after byte {split}"
             );
         }

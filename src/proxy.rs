@@ -565,7 +565,7 @@ mod tests {
         let first = derive_etag(b"\"upstream\"", "/regions/region:shenzhen", "embed");
         let second = derive_etag(b"\"upstream\"", "/regions/region:beijing", "embed");
         assert_ne!(first, second);
-        assert!(first.starts_with("W/\"kserw-v11-"));
+        assert!(first.starts_with("W/\"kserw-v12-"));
     }
 
     #[test]

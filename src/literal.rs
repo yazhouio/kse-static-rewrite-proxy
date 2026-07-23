@@ -19,10 +19,32 @@ pub enum RewriteError {
 
 #[derive(Debug)]
 pub struct StreamingRewritePipeline {
-    rewriters: Vec<StreamingLiteralRewriter>,
+    rewriters: Vec<StreamingRewriter>,
     max_bytes: usize,
     total_bytes: usize,
     finished: bool,
+}
+
+#[derive(Debug)]
+enum StreamingRewriter {
+    Literal(StreamingLiteralRewriter),
+    IdentifierPattern(StreamingIdentifierPatternRewriter),
+}
+
+impl StreamingRewriter {
+    fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {
+        match self {
+            Self::Literal(rewriter) => rewriter.push(input),
+            Self::IdentifierPattern(rewriter) => rewriter.push(input),
+        }
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, RewriteError> {
+        match self {
+            Self::Literal(rewriter) => rewriter.finish(),
+            Self::IdentifierPattern(rewriter) => rewriter.finish(),
+        }
+    }
 }
 
 impl StreamingRewritePipeline {
@@ -36,6 +58,7 @@ impl StreamingRewritePipeline {
             .into_iter()
             .map(|(source, replacement)| {
                 StreamingLiteralRewriter::new(source, replacement, usize::MAX)
+                    .map(StreamingRewriter::Literal)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Self::from_rewriters(rewriters, max_bytes)
@@ -58,6 +81,7 @@ impl StreamingRewritePipeline {
             .into_iter()
             .map(|(source, replacement)| {
                 StreamingLiteralRewriter::new(source, replacement, usize::MAX)
+                    .map(StreamingRewriter::Literal)
             })
             .collect::<Result<Vec<_>, _>>()?;
         rewriters.extend(
@@ -65,14 +89,46 @@ impl StreamingRewritePipeline {
                 .into_iter()
                 .map(|(source, replacement)| {
                     StreamingLiteralRewriter::new_exact(source, replacement, usize::MAX)
+                        .map(StreamingRewriter::Literal)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );
         Self::from_rewriters(rewriters, max_bytes)
     }
 
+    pub(crate) fn new_with_exact_and_identifier_patterns<PI, PS, PR, EI, ES, ER, II, IP, IS, IR>(
+        prefix_rules: PI,
+        exact_rules: EI,
+        identifier_rules: II,
+        max_bytes: usize,
+    ) -> Result<Self, RewriteError>
+    where
+        PI: IntoIterator<Item = (PS, PR)>,
+        PS: AsRef<[u8]>,
+        PR: AsRef<[u8]>,
+        EI: IntoIterator<Item = (ES, ER)>,
+        ES: AsRef<[u8]>,
+        ER: AsRef<[u8]>,
+        II: IntoIterator<Item = (IP, IS, IR)>,
+        IP: AsRef<[u8]>,
+        IS: AsRef<[u8]>,
+        IR: AsRef<[u8]>,
+    {
+        let mut pipeline = Self::new_with_exact(prefix_rules, exact_rules, max_bytes)?;
+        pipeline.rewriters.extend(
+            identifier_rules
+                .into_iter()
+                .map(|(prefix, suffix, replacement_prefix)| {
+                    StreamingIdentifierPatternRewriter::new(prefix, suffix, replacement_prefix)
+                        .map(StreamingRewriter::IdentifierPattern)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        Ok(pipeline)
+    }
+
     fn from_rewriters(
-        rewriters: Vec<StreamingLiteralRewriter>,
+        rewriters: Vec<StreamingRewriter>,
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
         if rewriters.is_empty() {
@@ -123,6 +179,164 @@ impl StreamingRewritePipeline {
         }
         Ok(output)
     }
+}
+
+#[derive(Debug)]
+struct StreamingIdentifierPatternRewriter {
+    prefix: Vec<u8>,
+    suffix: Vec<u8>,
+    replacement_prefix: Vec<u8>,
+    pending: Vec<u8>,
+    previous_byte: Option<u8>,
+    finished: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum IdentifierPatternMatch {
+    Match(usize),
+    NeedMore,
+    NoMatch,
+}
+
+impl StreamingIdentifierPatternRewriter {
+    fn new(
+        prefix: impl AsRef<[u8]>,
+        suffix: impl AsRef<[u8]>,
+        replacement_prefix: impl AsRef<[u8]>,
+    ) -> Result<Self, RewriteError> {
+        let prefix = prefix.as_ref().to_vec();
+        let suffix = suffix.as_ref().to_vec();
+        if prefix.is_empty() || suffix.is_empty() {
+            return Err(RewriteError::EmptySource);
+        }
+        Ok(Self {
+            prefix,
+            suffix,
+            replacement_prefix: replacement_prefix.as_ref().to_vec(),
+            pending: Vec::new(),
+            previous_byte: None,
+            finished: false,
+        })
+    }
+
+    fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {
+        if self.finished {
+            return Err(RewriteError::AlreadyFinished);
+        }
+        self.pending.extend_from_slice(input);
+        Ok(self.process_available(false))
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, RewriteError> {
+        if self.finished {
+            return Err(RewriteError::AlreadyFinished);
+        }
+        self.finished = true;
+        Ok(self.process_available(true))
+    }
+
+    fn process_available(&mut self, end_of_stream: bool) -> Vec<u8> {
+        let mut output = Vec::new();
+        loop {
+            let Some(position) = memmem::find(&self.pending, &self.prefix) else {
+                let emit_len = if end_of_stream {
+                    self.pending.len()
+                } else {
+                    self.pending
+                        .len()
+                        .saturating_sub(self.prefix.len().saturating_sub(1))
+                };
+                self.emit_pending(&mut output, emit_len);
+                break;
+            };
+
+            if position > 0 {
+                self.emit_pending(&mut output, position);
+                continue;
+            }
+
+            let preceded_by_identifier =
+                self.previous_byte.is_some_and(is_ascii_identifier_continue);
+            match if preceded_by_identifier {
+                IdentifierPatternMatch::NoMatch
+            } else {
+                self.match_candidate(end_of_stream)
+            } {
+                IdentifierPatternMatch::Match(matched_len) => {
+                    output.extend_from_slice(&self.replacement_prefix);
+                    output.extend_from_slice(&self.pending[self.prefix.len()..matched_len]);
+                    self.previous_byte = self.pending.get(matched_len - 1).copied();
+                    self.pending.drain(..matched_len);
+                }
+                IdentifierPatternMatch::NeedMore => break,
+                IdentifierPatternMatch::NoMatch => {
+                    self.emit_pending(&mut output, 1);
+                }
+            }
+        }
+        output
+    }
+
+    fn emit_pending(&mut self, output: &mut Vec<u8>, len: usize) {
+        if len == 0 {
+            return;
+        }
+        self.previous_byte = self.pending.get(len - 1).copied();
+        output.extend(self.pending.drain(..len));
+    }
+
+    fn match_candidate(&self, end_of_stream: bool) -> IdentifierPatternMatch {
+        let mut cursor = self.prefix.len();
+        let Some(&first) = self.pending.get(cursor) else {
+            return if end_of_stream {
+                IdentifierPatternMatch::NoMatch
+            } else {
+                IdentifierPatternMatch::NeedMore
+            };
+        };
+        if !is_ascii_identifier_start(first) {
+            return IdentifierPatternMatch::NoMatch;
+        }
+        cursor += 1;
+
+        while let Some(&byte) = self.pending.get(cursor) {
+            if !is_ascii_identifier_continue(byte) {
+                break;
+            }
+            cursor += 1;
+        }
+
+        if cursor == self.pending.len() {
+            return if end_of_stream {
+                IdentifierPatternMatch::NoMatch
+            } else {
+                IdentifierPatternMatch::NeedMore
+            };
+        }
+
+        let available = &self.pending[cursor..];
+        let compared_len = available.len().min(self.suffix.len());
+        if available[..compared_len] != self.suffix[..compared_len] {
+            return IdentifierPatternMatch::NoMatch;
+        }
+        if available.len() < self.suffix.len() {
+            return if end_of_stream {
+                IdentifierPatternMatch::NoMatch
+            } else {
+                IdentifierPatternMatch::NeedMore
+            };
+        }
+        IdentifierPatternMatch::Match(cursor + self.suffix.len())
+    }
+}
+
+// Webpack and Terser emit ASCII binding identifiers; keep this matcher scoped to that output.
+fn is_ascii_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$')
+}
+
+fn is_ascii_identifier_continue(byte: u8) -> bool {
+    is_ascii_identifier_start(byte) || byte.is_ascii_digit()
 }
 
 #[derive(Debug)]
