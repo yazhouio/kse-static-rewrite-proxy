@@ -2,6 +2,11 @@ name: Build Docker Images
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
+      - release/*
+      - hotfix/*
   release:
     types:
       - published
@@ -13,6 +18,7 @@ env:
   IMAGE_NAMESPACE: kubesphere
   IMAGE_NAME: kse-static-rewrite-proxy
   KUBESPHERE_HUB_REGISTRY: hub.kubesphere.com.cn
+  SHOULD_PUBLISH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
   build-by-arch:
@@ -36,7 +42,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Log In To KubeSphere Hub
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ env.SHOULD_PUBLISH == 'true' }}
         uses: docker/login-action@v4
         with:
           registry: ${{ env.KUBESPHERE_HUB_REGISTRY }}
@@ -55,7 +61,7 @@ jobs:
           cache-to: type=gha,mode=min,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
 
       - name: Build And Push By Digest
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ env.SHOULD_PUBLISH == 'true' }}
         id: build
         uses: docker/build-push-action@v7
         with:
@@ -67,22 +73,22 @@ jobs:
           cache-to: type=gha,mode=min,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
 
       - name: Export Digest
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ env.SHOULD_PUBLISH == 'true' }}
         shell: bash
         run: |
           mkdir -p digests
           echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.arch }}.txt"
 
       - name: Upload Digest
-        if: ${{ github.event_name == 'release' }}
+        if: ${{ env.SHOULD_PUBLISH == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: digests-${{ matrix.arch }}
           path: digests/*.txt
 
-  merge-release-manifest:
-    if: ${{ github.event_name == 'release' }}
-    name: Merge Release manifest
+  merge-manifest:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: Merge multi-arch manifest
     runs-on: ubuntu-latest
     needs:
       - build-by-arch
@@ -110,7 +116,12 @@ jobs:
           set -euo pipefail
 
           image_repository="${KUBESPHERE_HUB_REGISTRY}/${IMAGE_NAMESPACE}/${IMAGE_NAME}"
-          image_tag="${image_repository}:${GITHUB_REF_NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            image_tags=("${image_repository}:${GITHUB_REF_NAME}")
+          else
+            safe_ref="${GITHUB_REF_NAME//\//-}"
+            image_tags=("${image_repository}:${safe_ref}" "${image_repository}:latest")
+          fi
 
           mapfile -t digest_files < <(find digests -maxdepth 1 -type f -name '*.txt' | sort)
           image_references=()
@@ -122,22 +133,30 @@ jobs:
             platforms+=("linux/${arch}")
           done
 
+          tag_arguments=()
+          for image_tag in "${image_tags[@]}"; do
+            tag_arguments+=(--tag "${image_tag}")
+          done
+
           docker buildx imagetools create \
-            --tag "${image_tag}" \
+            "${tag_arguments[@]}" \
             "${image_references[@]}"
 
+          primary_tag="${image_tags[0]}"
           image_digest="$(
-            docker buildx imagetools inspect "${image_tag}" \
+            docker buildx imagetools inspect "${primary_tag}" \
               | sed -n 's/^Digest: //p' \
               | head -n1
           )"
+          tag_list="$(printf '`%s`, ' "${image_tags[@]}")"
+          tag_list="${tag_list%, }"
           platform_list="$(printf '`%s`, ' "${platforms[@]}")"
           platform_list="${platform_list%, }"
 
           {
             echo "## Multi-platform image"
             echo
-            echo "- Tag: \`${image_tag}\`"
+            echo "- Tags: ${tag_list}"
             echo "- Digest: \`${image_digest}\`"
             echo "- Platforms: ${platform_list}"
           } >> "${GITHUB_STEP_SUMMARY}"
