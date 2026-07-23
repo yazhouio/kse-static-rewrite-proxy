@@ -1,6 +1,6 @@
 # KSE static rewrite proxy
 
-A temporary, independently deployable Pingora sidecar for KSE Console. It forwards every Console request to the BFF unchanged, except for a narrowly scoped stream rewrite in configured extension V3 text assets.
+A temporary, independently deployable Pingora sidecar for KSE Console. It forwards every Console request to the BFF unchanged, except for narrowly scoped stream rewrites in configured extension assets.
 
 ## Request flow
 
@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-A response is eligible only when all conditions hold:
+Console V3 responses are eligible only when all conditions hold:
 
 - Request method is `GET` or `HEAD`.
 - Request path is `{basePath}/extensions-static/{extension}/dist/v3dist/**`.
@@ -36,6 +36,17 @@ The response body is rewritten as a stream:
 ```
 
 Some legacy extension bundles construct locale URLs at runtime from a standalone `/extensions-static/` string plus the extension name. Within the same eligible, allowlisted V3 text response only, the pipeline also rewrites that standalone root to `{basePath}/extensions-static/`. It adjusts the legacy Console V3 React Router `basename` expression so browser history retains `{basePath}`, and prefixes relative API URLs produced by the bundle's centralized request normalizer. That keeps isolated authentication cookies usable without changing their `Path`. These rules remain scoped to the selected extension response; they do not rewrite API response bodies or binary assets.
+
+When `kubeeye` is allowlisted, direct JavaScript files under
+`{basePath}/jsbundles/kubeeye/dist/kubeeye/*.js` receive one additional exact rewrite:
+
+```text
+`//${window.location.host}/${rt}/consolev3`
+        ->
+`//${window.location.host}{basePath}/${rt}/consolev3`
+```
+
+This rule does not apply to nested JavaScript files, other jsbundles, or non-JavaScript assets.
 
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
@@ -56,6 +67,7 @@ rewriteSidecar:
   rewrite:
     enabledExtensions:
       - ks-console-embed
+      - kubeeye
     maxDecodedBytes: 20971520
     maxConcurrent: 4
     maxQueued: 32

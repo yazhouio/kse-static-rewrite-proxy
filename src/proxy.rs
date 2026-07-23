@@ -25,7 +25,7 @@ use crate::config::EffectiveConfig;
 use crate::literal::StreamingRewritePipeline;
 use crate::metrics::Metrics;
 use crate::rewrite::{
-    REWRITE_RULE_VERSION, RewriteDecision, RewritePolicy, build_response_rewriter,
+    REWRITE_RULE_VERSION, RewriteDecision, RewritePolicy, build_selected_response_rewriter,
 };
 
 const COMPRESSION_LEVEL: u32 = 6;
@@ -183,6 +183,7 @@ impl ProxyHttp for KseRewriteProxy {
 
         ctx.decision = self.policy.decide(&ctx.method, &ctx.path);
         let RewriteDecision::Rewrite {
+            profile,
             extension,
             source,
             replacement,
@@ -200,7 +201,8 @@ impl ProxyHttp for KseRewriteProxy {
                 return Ok(true);
             }
             ctx.rewriter = Some(
-                build_response_rewriter(
+                build_selected_response_rewriter(
+                    profile,
                     self.config.base_path(),
                     &source,
                     &replacement,
@@ -565,7 +567,7 @@ mod tests {
         let first = derive_etag(b"\"upstream\"", "/regions/region:shenzhen", "embed");
         let second = derive_etag(b"\"upstream\"", "/regions/region:beijing", "embed");
         assert_ne!(first, second);
-        assert!(first.starts_with("W/\"kserw-v16-"));
+        assert!(first.starts_with("W/\"kserw-v17-"));
     }
 
     #[test]

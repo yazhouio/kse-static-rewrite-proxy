@@ -8,6 +8,7 @@ rewriteSidecar:
   rewrite:
     enabledExtensions:
       - ks-console-embed
+      - kubeeye
     maxDecodedBytes: 20971520
     maxConcurrent: 4
     maxQueued: 32

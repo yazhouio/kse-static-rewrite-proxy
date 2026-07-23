@@ -2,12 +2,19 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v16";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v17";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteProfile {
+    ConsoleV3,
+    KubeEyeJsBundle,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewriteDecision {
     Bypass,
     Rewrite {
+        profile: RewriteProfile,
         extension: String,
         source: Vec<u8>,
         replacement: Vec<u8>,
@@ -43,6 +50,28 @@ impl RewritePolicy {
             return RewriteDecision::Bypass;
         }
 
+        let kubeeye_prefix = format!("{}/jsbundles/kubeeye/dist/kubeeye/", self.base_path);
+        if self.enabled_extensions.contains("kubeeye") {
+            if let Some(asset_path) = path.strip_prefix(&kubeeye_prefix) {
+                if !asset_path.is_empty()
+                    && !asset_path.contains('/')
+                    && asset_path.ends_with(".js")
+                {
+                    return RewriteDecision::Rewrite {
+                        profile: RewriteProfile::KubeEyeJsBundle,
+                        extension: "kubeeye".to_owned(),
+                        source: b"`//${window.location.host}/${rt}/consolev3`".to_vec(),
+                        replacement: format!(
+                            "`//${{window.location.host}}{}/${{rt}}/consolev3`",
+                            self.base_path
+                        )
+                        .into_bytes(),
+                        head_only: method.eq_ignore_ascii_case("HEAD"),
+                    };
+                }
+            }
+        }
+
         let static_prefix = format!("{}/extensions-static/", self.base_path);
         let Some(extension_path) = path.strip_prefix(&static_prefix) else {
             return RewriteDecision::Bypass;
@@ -62,6 +91,7 @@ impl RewritePolicy {
         let source = format!("/extensions-static/{extension}/dist/v3dist/");
         let replacement = format!("{}{}", self.base_path, source);
         RewriteDecision::Rewrite {
+            profile: RewriteProfile::ConsoleV3,
             extension: extension.to_string(),
             source: source.into_bytes(),
             replacement: replacement.into_bytes(),
@@ -75,6 +105,25 @@ fn is_text_asset(asset_path: &str) -> bool {
     [".js", ".mjs", ".css", ".json", ".html", ".htm"]
         .iter()
         .any(|suffix| filename.ends_with(suffix))
+}
+
+pub(crate) fn build_selected_response_rewriter(
+    profile: RewriteProfile,
+    base_path: &str,
+    source: &[u8],
+    replacement: &[u8],
+    max_bytes: usize,
+) -> Result<StreamingRewritePipeline, RewriteError> {
+    match profile {
+        RewriteProfile::ConsoleV3 => {
+            build_response_rewriter(base_path, source, replacement, max_bytes)
+        }
+        RewriteProfile::KubeEyeJsBundle => StreamingRewritePipeline::new_with_exact(
+            std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
+            [(source.to_vec(), replacement.to_vec())],
+            max_bytes,
+        ),
+    }
 }
 
 pub(crate) fn build_response_rewriter(
@@ -272,6 +321,61 @@ mod tests {
             );
             output.extend(pipeline.finish().expect("finish stream"));
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+        }
+    }
+
+    #[test]
+    fn kubeeye_rewriter_prefixes_only_the_console_v3_base_url_idempotently() {
+        let source = b"`//${window.location.host}/${rt}/consolev3`";
+        let replacement = b"`//${window.location.host}/regions/region:shenzhen/${rt}/consolev3`";
+        let input = concat!(
+            r#"const rt="kubeeye",ot=`${rt}-console-v3`,"#,
+            r#"ut=`//${window.location.host}/${rt}/consolev3`,"#,
+            r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
+            r#"const untouched=`//${window.location.host}/${other}/consolev3`;"#
+        );
+        let expected = concat!(
+            r#"const rt="kubeeye",ot=`${rt}-console-v3`,"#,
+            r#"ut=`//${window.location.host}/regions/region:shenzhen/${rt}/consolev3`,"#,
+            r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
+            r#"const untouched=`//${window.location.host}/${other}/consolev3`;"#
+        );
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::KubeEyeJsBundle,
+                "/regions/region:shenzhen",
+                source,
+                replacement,
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::KubeEyeJsBundle,
+                "/regions/region:shenzhen",
+                source,
+                replacement,
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
+            );
         }
     }
 }
