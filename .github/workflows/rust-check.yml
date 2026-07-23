@@ -3,7 +3,7 @@ name: Rust Check
 on:
   pull_request:
     branches:
-      - *
+      - '*'
       - main
       - release/*
       - hotfix/*
