@@ -1,5 +1,9 @@
 use std::collections::HashSet;
 
+use crate::literal::{RewriteError, StreamingRewritePipeline};
+
+pub(crate) const REWRITE_RULE_VERSION: &str = "v11";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RewriteDecision {
     Bypass,
@@ -71,4 +75,100 @@ fn is_text_asset(asset_path: &str) -> bool {
     [".js", ".mjs", ".css", ".json", ".html", ".htm"]
         .iter()
         .any(|suffix| filename.ends_with(suffix))
+}
+
+pub(crate) fn build_response_rewriter(
+    base_path: &str,
+    source: &[u8],
+    replacement: &[u8],
+    max_bytes: usize,
+) -> Result<StreamingRewritePipeline, RewriteError> {
+    let static_source = b"/extensions-static/".to_vec();
+    let static_replacement = format!("{base_path}/extensions-static/").into_bytes();
+    let exact_rules = [
+        (
+            b"basename: \"\".concat(webPrefix, \"/consolev3\")".to_vec(),
+            format!("basename: \"{base_path}/\".concat(webPrefix, \"/consolev3\")").into_bytes(),
+        ),
+        (
+            b"basename:\"\".concat(webPrefix,\"/consolev3\")".to_vec(),
+            format!("basename:\"{base_path}/\".concat(webPrefix,\"/consolev3\")").into_bytes(),
+        ),
+        (
+            b"basename: \\\"\\\".concat(webPrefix, \\\"/consolev3\\\")".to_vec(),
+            format!(
+                "basename: \\\"{base_path}/\\\".concat(webPrefix, \\\"/consolev3\\\")"
+            )
+            .into_bytes(),
+        ),
+        (
+            b"basename:\\\"\\\".concat(webPrefix,\\\"/consolev3\\\")".to_vec(),
+            format!("basename:\\\"{base_path}/\\\".concat(webPrefix,\\\"/consolev3\\\")")
+                .into_bytes(),
+        ),
+        (
+            b"return requestURL.replace(/\\\\/\\\\/+/, '/');".to_vec(),
+            format!(
+                "return requestURL.toLowerCase().startsWith('http://') || requestURL.toLowerCase().startsWith('https://') || requestURL.startsWith('//') ? requestURL : (requestURL.replace(/\\\\/\\\\/+/, '/') === '{base_path}' || requestURL.replace(/\\\\/\\\\/+/, '/').startsWith('{base_path}/') ? requestURL.replace(/\\\\/\\\\/+/, '/') : '{base_path}/'.concat(requestURL.replace(/\\\\/\\\\/+/, '/').replace(/^\\\\/+/, '')));"
+            )
+            .into_bytes(),
+        ),
+        (
+            b"return \"/\".concat(path.trimLeft('/'));".to_vec(),
+            b"return path.startsWith('/') ? path : \"/\".concat(path);".to_vec(),
+        ),
+        (
+            b"return \\\"/\\\".concat(path.trimLeft('/'));".to_vec(),
+            b"return path.startsWith('/') ? path : \\\"/\\\".concat(path);".to_vec(),
+        ),
+        (
+            b"if (path.startsWith('http')) {".to_vec(),
+            b"if (path.toLowerCase().startsWith('http://') || path.toLowerCase().startsWith('https://')) {"
+                .to_vec(),
+        ),
+    ];
+
+    StreamingRewritePipeline::new_with_exact(
+        [
+            (source.to_vec(), replacement.to_vec()),
+            (static_source, static_replacement),
+        ],
+        exact_rules,
+        max_bytes,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SOURCE: &[u8] = b"/extensions-static/ks-console-embed/dist/v3dist/";
+    const REPLACEMENT: &[u8] =
+        b"/regions/region:shenzhen/extensions-static/ks-console-embed/dist/v3dist/";
+
+    #[test]
+    fn response_rewriter_handles_router_basename_variants_idempotently() {
+        let input = b"spaced=basename: \"\".concat(webPrefix, \"/consolev3\");compact=basename:\"\".concat(webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"\\\".concat(webPrefix, \\\"/consolev3\\\");escaped-compact=basename:\\\"\\\".concat(webPrefix,\\\"/consolev3\\\")";
+        let expected = b"spaced=basename: \"/regions/region:shenzhen/\".concat(webPrefix, \"/consolev3\");compact=basename:\"/regions/region:shenzhen/\".concat(webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"/regions/region:shenzhen/\\\".concat(webPrefix, \\\"/consolev3\\\");escaped-compact=basename:\\\"/regions/region:shenzhen/\\\".concat(webPrefix,\\\"/consolev3\\\")";
+
+        for split in 0..=input.len() {
+            let mut pipeline =
+                build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
+                    .expect("valid rewrite rules");
+            let mut output = pipeline.push(&input[..split]).expect("first chunk");
+            output.extend(pipeline.push(&input[split..]).expect("second chunk"));
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected, "split at byte {split}");
+
+            let mut second_pass =
+                build_response_rewriter("/regions/region:shenzhen", SOURCE, REPLACEMENT, 1024)
+                    .expect("valid rewrite rules");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output, expected,
+                "second pass after byte {split}"
+            );
+        }
+    }
 }
