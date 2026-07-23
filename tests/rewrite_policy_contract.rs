@@ -37,40 +37,51 @@ fn rewrites_only_prefixed_text_assets_for_enabled_v3_extensions() {
 }
 
 #[test]
-fn rewrites_only_enabled_direct_kubeeye_javascript_bundles() {
-    let policy = RewritePolicy::new("/regions/region:shenzhen", ["ks-console-embed", "kubeeye"]);
+fn rewrites_only_configured_direct_javascript_bundles() {
+    let policy = RewritePolicy::new(
+        "/regions/region:shenzhen",
+        ["ks-console-embed", "observability"],
+    );
 
     for method in ["GET", "HEAD"] {
         let target = policy.decide(
             method,
-            "/regions/region:shenzhen/jsbundles/kubeeye/dist/kubeeye/index.js",
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/index.js",
         );
         assert!(matches!(
             target,
             RewriteDecision::Rewrite {
-                profile: RewriteProfile::KubeEyeJsBundle,
+                profile: RewriteProfile::JsBundle,
+                ref extension,
                 ..
-            }
+            } if extension == "observability"
         ));
     }
 
     for (method, path) in [
-        ("GET", "/jsbundles/kubeeye/dist/kubeeye/index.js"),
         (
             "GET",
-            "/regions/region:shenzhen/jsbundles/another-extension/dist/kubeeye/index.js",
+            "/jsbundles/observability/dist/observability/index.js",
         ),
         (
             "GET",
-            "/regions/region:shenzhen/jsbundles/kubeeye/dist/kubeeye/chunks/index.js",
+            "/regions/region:shenzhen/jsbundles/another-extension/dist/another-extension/index.js",
         ),
         (
             "GET",
-            "/regions/region:shenzhen/jsbundles/kubeeye/dist/kubeeye/index.css",
+            "/regions/region:shenzhen/jsbundles/observability/dist/another-extension/index.js",
+        ),
+        (
+            "GET",
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/chunks/index.js",
+        ),
+        (
+            "GET",
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/index.css",
         ),
         (
             "POST",
-            "/regions/region:shenzhen/jsbundles/kubeeye/dist/kubeeye/index.js",
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/index.js",
         ),
     ] {
         assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
@@ -80,7 +91,7 @@ fn rewrites_only_enabled_direct_kubeeye_javascript_bundles() {
     assert_eq!(
         disabled.decide(
             "GET",
-            "/regions/region:shenzhen/jsbundles/kubeeye/dist/kubeeye/index.js",
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/index.js",
         ),
         RewriteDecision::Bypass
     );

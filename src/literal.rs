@@ -127,6 +127,19 @@ impl StreamingRewritePipeline {
         Ok(pipeline)
     }
 
+    pub(crate) fn new_with_identifier_pattern(
+        prefix: impl AsRef<[u8]>,
+        suffix: impl AsRef<[u8]>,
+        replacement_prefix: impl AsRef<[u8]>,
+        max_bytes: usize,
+    ) -> Result<Self, RewriteError> {
+        let rewriter = StreamingIdentifierPatternRewriter::new(prefix, suffix, replacement_prefix)?;
+        Self::from_rewriters(
+            vec![StreamingRewriter::IdentifierPattern(rewriter)],
+            max_bytes,
+        )
+    }
+
     pub(crate) fn with_identifier_template_patterns<II, IP, IS, IT>(
         mut self,
         identifier_rules: II,

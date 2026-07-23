@@ -37,16 +37,16 @@ The response body is rewritten as a stream:
 
 Some legacy extension bundles construct locale URLs at runtime from a standalone `/extensions-static/` string plus the extension name. Within the same eligible, allowlisted V3 text response only, the pipeline also rewrites that standalone root to `{basePath}/extensions-static/`. It adjusts the legacy Console V3 React Router `basename` expression so browser history retains `{basePath}`, and prefixes relative API URLs produced by the bundle's centralized request normalizer. That keeps isolated authentication cookies usable without changing their `Path`. These rules remain scoped to the selected extension response; they do not rewrite API response bodies or binary assets.
 
-When `kubeeye` is allowlisted, direct JavaScript files under
-`{basePath}/jsbundles/kubeeye/dist/kubeeye/*.js` receive one additional exact rewrite:
+For each allowlisted `{extension}`, direct JavaScript files under
+`{basePath}/jsbundles/{extension}/dist/{extension}/*.js` receive one additional rewrite:
 
 ```text
-`//${window.location.host}/${rt}/consolev3`
+`//${window.location.host}/${<identifier>}/consolev3`
         ->
-`//${window.location.host}{basePath}/${rt}/consolev3`
+`//${window.location.host}{basePath}/${<identifier>}/consolev3`
 ```
 
-This rule does not apply to nested JavaScript files, other jsbundles, or non-JavaScript assets.
+The interpolated JavaScript identifier may vary between bundle builds. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
 
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 

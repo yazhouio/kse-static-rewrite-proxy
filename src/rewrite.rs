@@ -2,12 +2,12 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v17";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v18";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
     ConsoleV3,
-    KubeEyeJsBundle,
+    JsBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,8 +16,6 @@ pub enum RewriteDecision {
     Rewrite {
         profile: RewriteProfile,
         extension: String,
-        source: Vec<u8>,
-        replacement: Vec<u8>,
         head_only: bool,
     },
 }
@@ -50,26 +48,22 @@ impl RewritePolicy {
             return RewriteDecision::Bypass;
         }
 
-        let kubeeye_prefix = format!("{}/jsbundles/kubeeye/dist/kubeeye/", self.base_path);
-        if self.enabled_extensions.contains("kubeeye") {
-            if let Some(asset_path) = path.strip_prefix(&kubeeye_prefix) {
-                if !asset_path.is_empty()
-                    && !asset_path.contains('/')
-                    && asset_path.ends_with(".js")
-                {
-                    return RewriteDecision::Rewrite {
-                        profile: RewriteProfile::KubeEyeJsBundle,
-                        extension: "kubeeye".to_owned(),
-                        source: b"`//${window.location.host}/${rt}/consolev3`".to_vec(),
-                        replacement: format!(
-                            "`//${{window.location.host}}{}/${{rt}}/consolev3`",
-                            self.base_path
-                        )
-                        .into_bytes(),
-                        head_only: method.eq_ignore_ascii_case("HEAD"),
-                    };
-                }
-            }
+        let jsbundle_prefix = format!("{}/jsbundles/", self.base_path);
+        if let Some(bundle_path) = path.strip_prefix(&jsbundle_prefix)
+            && let Some((extension, distribution_path)) = bundle_path.split_once("/dist/")
+            && let Some(asset_path) = distribution_path
+                .strip_prefix(extension)
+                .and_then(|path| path.strip_prefix('/'))
+            && self.enabled_extensions.contains(extension)
+            && !asset_path.is_empty()
+            && !asset_path.contains('/')
+            && asset_path.ends_with(".js")
+        {
+            return RewriteDecision::Rewrite {
+                profile: RewriteProfile::JsBundle,
+                extension: extension.to_owned(),
+                head_only: method.eq_ignore_ascii_case("HEAD"),
+            };
         }
 
         let static_prefix = format!("{}/extensions-static/", self.base_path);
@@ -88,13 +82,9 @@ impl RewritePolicy {
             return RewriteDecision::Bypass;
         }
 
-        let source = format!("/extensions-static/{extension}/dist/v3dist/");
-        let replacement = format!("{}{}", self.base_path, source);
         RewriteDecision::Rewrite {
             profile: RewriteProfile::ConsoleV3,
             extension: extension.to_string(),
-            source: source.into_bytes(),
-            replacement: replacement.into_bytes(),
             head_only: method.eq_ignore_ascii_case("HEAD"),
         }
     }
@@ -110,17 +100,24 @@ fn is_text_asset(asset_path: &str) -> bool {
 pub(crate) fn build_selected_response_rewriter(
     profile: RewriteProfile,
     base_path: &str,
-    source: &[u8],
-    replacement: &[u8],
+    extension: &str,
     max_bytes: usize,
 ) -> Result<StreamingRewritePipeline, RewriteError> {
     match profile {
         RewriteProfile::ConsoleV3 => {
-            build_response_rewriter(base_path, source, replacement, max_bytes)
+            let source = format!("/extensions-static/{extension}/dist/v3dist/");
+            let replacement = format!("{base_path}{source}");
+            build_response_rewriter(
+                base_path,
+                source.as_bytes(),
+                replacement.as_bytes(),
+                max_bytes,
+            )
         }
-        RewriteProfile::KubeEyeJsBundle => StreamingRewritePipeline::new_with_exact(
-            std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
-            [(source.to_vec(), replacement.to_vec())],
+        RewriteProfile::JsBundle => StreamingRewritePipeline::new_with_identifier_pattern(
+            b"`//${window.location.host}/${",
+            b"}/consolev3`",
+            format!("`//${{window.location.host}}{base_path}/${{"),
             max_bytes,
         ),
     }
@@ -325,28 +322,25 @@ mod tests {
     }
 
     #[test]
-    fn kubeeye_rewriter_prefixes_only_the_console_v3_base_url_idempotently() {
-        let source = b"`//${window.location.host}/${rt}/consolev3`";
-        let replacement = b"`//${window.location.host}/regions/region:shenzhen/${rt}/consolev3`";
+    fn jsbundle_rewriter_prefixes_console_v3_base_urls_for_any_identifier_idempotently() {
         let input = concat!(
-            r#"const rt="kubeeye",ot=`${rt}-console-v3`,"#,
-            r#"ut=`//${window.location.host}/${rt}/consolev3`,"#,
+            r#"const bundleName="observability",ot=`${bundleName}-console-v3`,"#,
+            r#"ut=`//${window.location.host}/${bundleName}/consolev3`,"#,
             r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
-            r#"const untouched=`//${window.location.host}/${other}/consolev3`;"#
+            r#"const another=`//${window.location.host}/${other_2}/consolev3`;"#
         );
         let expected = concat!(
-            r#"const rt="kubeeye",ot=`${rt}-console-v3`,"#,
-            r#"ut=`//${window.location.host}/regions/region:shenzhen/${rt}/consolev3`,"#,
+            r#"const bundleName="observability",ot=`${bundleName}-console-v3`,"#,
+            r#"ut=`//${window.location.host}/regions/region:shenzhen/${bundleName}/consolev3`,"#,
             r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
-            r#"const untouched=`//${window.location.host}/${other}/consolev3`;"#
+            r#"const another=`//${window.location.host}/regions/region:shenzhen/${other_2}/consolev3`;"#
         );
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::KubeEyeJsBundle,
+                RewriteProfile::JsBundle,
                 "/regions/region:shenzhen",
-                source,
-                replacement,
+                "observability",
                 1024,
             )
             .expect("valid rewrite rule");
@@ -362,10 +356,9 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::KubeEyeJsBundle,
+                RewriteProfile::JsBundle,
                 "/regions/region:shenzhen",
-                source,
-                replacement,
+                "observability",
                 1024,
             )
             .expect("valid rewrite rule");

@@ -185,8 +185,6 @@ impl ProxyHttp for KseRewriteProxy {
         let RewriteDecision::Rewrite {
             profile,
             extension,
-            source,
-            replacement,
             head_only,
         } = ctx.decision.clone()
         else {
@@ -194,7 +192,7 @@ impl ProxyHttp for KseRewriteProxy {
             return Ok(false);
         };
 
-        ctx.extension = Some(extension);
+        ctx.extension = Some(extension.clone());
         ctx.outcome = "rewrite";
         if !head_only {
             if !self.admit_rewrite(session, ctx).await? {
@@ -204,8 +202,7 @@ impl ProxyHttp for KseRewriteProxy {
                 build_selected_response_rewriter(
                     profile,
                     self.config.base_path(),
-                    &source,
-                    &replacement,
+                    &extension,
                     self.config.max_decoded_bytes(),
                 )
                 .map_err(|cause| {
@@ -567,7 +564,7 @@ mod tests {
         let first = derive_etag(b"\"upstream\"", "/regions/region:shenzhen", "embed");
         let second = derive_etag(b"\"upstream\"", "/regions/region:beijing", "embed");
         assert_ne!(first, second);
-        assert!(first.starts_with("W/\"kserw-v17-"));
+        assert!(first.starts_with("W/\"kserw-v18-"));
     }
 
     #[test]
