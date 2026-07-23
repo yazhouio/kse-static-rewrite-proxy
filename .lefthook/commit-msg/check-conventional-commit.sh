@@ -1,8 +1,9 @@
 #!/bin/sh
 
-commit_message_file=$1
+commit_message_file=${1:?missing commit message file}
 subject=$(sed -n '1p' "$commit_message_file")
-conventional_pattern='^[[:alnum:]][[:alnum:]_-]*(\([^)]+\))?!?: [^[:space:]].*$'
+
+conventional_pattern='^[a-z][a-z0-9-]*(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]].*$'
 
 if printf '%s\n' "$subject" | grep -Eq "$conventional_pattern"; then
   exit 0
@@ -15,5 +16,7 @@ Commit message must follow Conventional Commits:
 Examples:
   feat(proxy): support compressed responses
   fix!: reject invalid upstream addresses
+  refactor(worker): simplify process lifecycle
 EOF
+
 exit 1
