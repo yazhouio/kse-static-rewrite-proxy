@@ -18,3 +18,9 @@ pre-push:
   jobs:
     - name: Run tests
       run: cargo test --workspace --locked
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run Clippy
+      run: cargo clippy --workspace --all-targets --locked -- -D warnings
