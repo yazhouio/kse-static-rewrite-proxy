@@ -1,0 +1,40 @@
+name: Rust Check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release/*
+      - hotfix/*
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+jobs:
+  rust-check:
+    name: Format, Clippy, Test
+    runs-on: self-runner-extensions
+    steps:
+      - name: Check Out Repository
+        uses: actions/checkout@v6
+
+      - name: Set Up Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: rustfmt, clippy
+
+      - name: Restore Cargo Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run Tests
+        run: cargo test --workspace --locked
