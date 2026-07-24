@@ -217,7 +217,7 @@ pub(crate) fn build_response_rewriter(
                 .to_vec(),
         ),
     ];
-    let identifier_rules = [
+    let member_expression_rules = [
         (
             b"basename: \"\".concat(".to_vec(),
             b", \"/consolev3\")".to_vec(),
@@ -240,13 +240,13 @@ pub(crate) fn build_response_rewriter(
         ),
     ];
 
-    StreamingRewritePipeline::new_with_exact_and_identifier_patterns(
+    StreamingRewritePipeline::new_with_exact_and_member_expression_patterns(
         [
             (source.to_vec(), replacement.to_vec()),
             (static_source, static_replacement),
         ],
         exact_rules,
-        identifier_rules,
+        member_expression_rules,
         max_bytes,
     )
     .and_then(|pipeline| {
@@ -291,10 +291,10 @@ mod tests {
     fn response_rewriter_handles_router_basename_variants_idempotently() {
         let long_identifier = format!("a{}", "b".repeat(128));
         let input = format!(
-            "spaced=basename: \"\".concat(webPrefix, \"/consolev3\");compact=basename:\"\".concat(o,\"/consolev3\");escaped-spaced=basename: \\\"\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
+            "spaced=basename: \"\".concat(webPrefix, \"/consolev3\");compact=basename:\"\".concat(o,\"/consolev3\");member=basename:\"\".concat(r.webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
         );
         let expected = format!(
-            "spaced=basename: \"/regions/region:shenzhen/\".concat(webPrefix, \"/consolev3\");compact=basename:\"/regions/region:shenzhen/\".concat(o,\"/consolev3\");escaped-spaced=basename: \\\"/regions/region:shenzhen/\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"/regions/region:shenzhen/\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
+            "spaced=basename: \"/regions/region:shenzhen/\".concat(webPrefix, \"/consolev3\");compact=basename:\"/regions/region:shenzhen/\".concat(o,\"/consolev3\");member=basename:\"/regions/region:shenzhen/\".concat(r.webPrefix,\"/consolev3\");escaped-spaced=basename: \\\"/regions/region:shenzhen/\\\".concat($router_2, \\\"/consolev3\\\");escaped-compact=basename:\\\"/regions/region:shenzhen/\\\".concat({long_identifier},\\\"/consolev3\\\");unrelated=basename:\"\".concat(apiPrefix,\"/other\");mybasename:\"\".concat(o,\"/consolev3\")"
         );
 
         for split in 0..=input.len() {

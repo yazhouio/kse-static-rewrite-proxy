@@ -28,21 +28,21 @@ pub struct StreamingRewritePipeline {
 #[derive(Debug)]
 enum StreamingRewriter {
     Literal(StreamingLiteralRewriter),
-    IdentifierPattern(StreamingIdentifierPatternRewriter),
+    ExpressionPattern(StreamingExpressionPatternRewriter),
 }
 
 impl StreamingRewriter {
     fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {
         match self {
             Self::Literal(rewriter) => rewriter.push(input),
-            Self::IdentifierPattern(rewriter) => rewriter.push(input),
+            Self::ExpressionPattern(rewriter) => rewriter.push(input),
         }
     }
 
     fn finish(&mut self) -> Result<Vec<u8>, RewriteError> {
         match self {
             Self::Literal(rewriter) => rewriter.finish(),
-            Self::IdentifierPattern(rewriter) => rewriter.finish(),
+            Self::ExpressionPattern(rewriter) => rewriter.finish(),
         }
     }
 }
@@ -96,10 +96,21 @@ impl StreamingRewritePipeline {
         Self::from_rewriters(rewriters, max_bytes)
     }
 
-    pub(crate) fn new_with_exact_and_identifier_patterns<PI, PS, PR, EI, ES, ER, II, IP, IS, IR>(
+    pub(crate) fn new_with_exact_and_member_expression_patterns<
+        PI,
+        PS,
+        PR,
+        EI,
+        ES,
+        ER,
+        II,
+        IP,
+        IS,
+        IR,
+    >(
         prefix_rules: PI,
         exact_rules: EI,
-        identifier_rules: II,
+        member_expression_rules: II,
         max_bytes: usize,
     ) -> Result<Self, RewriteError>
     where
@@ -116,11 +127,15 @@ impl StreamingRewritePipeline {
     {
         let mut pipeline = Self::new_with_exact(prefix_rules, exact_rules, max_bytes)?;
         pipeline.rewriters.extend(
-            identifier_rules
+            member_expression_rules
                 .into_iter()
                 .map(|(prefix, suffix, replacement_prefix)| {
-                    StreamingIdentifierPatternRewriter::new(prefix, suffix, replacement_prefix)
-                        .map(StreamingRewriter::IdentifierPattern)
+                    StreamingExpressionPatternRewriter::new_member_expression(
+                        prefix,
+                        suffix,
+                        replacement_prefix,
+                    )
+                    .map(StreamingRewriter::ExpressionPattern)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );
@@ -133,9 +148,9 @@ impl StreamingRewritePipeline {
         replacement_prefix: impl AsRef<[u8]>,
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
-        let rewriter = StreamingIdentifierPatternRewriter::new(prefix, suffix, replacement_prefix)?;
+        let rewriter = StreamingExpressionPatternRewriter::new(prefix, suffix, replacement_prefix)?;
         Self::from_rewriters(
-            vec![StreamingRewriter::IdentifierPattern(rewriter)],
+            vec![StreamingRewriter::ExpressionPattern(rewriter)],
             max_bytes,
         )
     }
@@ -154,8 +169,8 @@ impl StreamingRewritePipeline {
             identifier_rules
                 .into_iter()
                 .map(|(prefix, suffix, template)| {
-                    StreamingIdentifierPatternRewriter::new_template(prefix, suffix, template)
-                        .map(StreamingRewriter::IdentifierPattern)
+                    StreamingExpressionPatternRewriter::new_template(prefix, suffix, template)
+                        .map(StreamingRewriter::ExpressionPattern)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         );
@@ -221,29 +236,36 @@ impl StreamingRewritePipeline {
 }
 
 #[derive(Debug)]
-struct StreamingIdentifierPatternRewriter {
+struct StreamingExpressionPatternRewriter {
     prefix_finder: memmem::Finder<'static>,
     suffix: Vec<u8>,
-    replacement: IdentifierReplacement,
+    replacement: ExpressionReplacement,
+    syntax: PatternSyntax,
     pending: Vec<u8>,
     previous_byte: Option<u8>,
     finished: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PatternSyntax {
+    Identifier,
+    MemberExpression,
+}
+
 #[derive(Debug)]
-enum IdentifierReplacement {
+enum ExpressionReplacement {
     Prefix(Vec<u8>),
     Template(Vec<u8>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum IdentifierPatternMatch {
+enum ExpressionPatternMatch {
     Match(usize),
     NeedMore,
     NoMatch,
 }
 
-impl StreamingIdentifierPatternRewriter {
+impl StreamingExpressionPatternRewriter {
     fn new(
         prefix: impl AsRef<[u8]>,
         suffix: impl AsRef<[u8]>,
@@ -257,11 +279,22 @@ impl StreamingIdentifierPatternRewriter {
         Ok(Self {
             prefix_finder: memmem::Finder::new(prefix).into_owned(),
             suffix: suffix.to_vec(),
-            replacement: IdentifierReplacement::Prefix(replacement_prefix.as_ref().to_vec()),
+            replacement: ExpressionReplacement::Prefix(replacement_prefix.as_ref().to_vec()),
+            syntax: PatternSyntax::Identifier,
             pending: Vec::new(),
             previous_byte: None,
             finished: false,
         })
+    }
+
+    fn new_member_expression(
+        prefix: impl AsRef<[u8]>,
+        suffix: impl AsRef<[u8]>,
+        replacement_prefix: impl AsRef<[u8]>,
+    ) -> Result<Self, RewriteError> {
+        let mut rewriter = Self::new(prefix, suffix, replacement_prefix)?;
+        rewriter.syntax = PatternSyntax::MemberExpression;
+        Ok(rewriter)
     }
 
     fn new_template(
@@ -277,7 +310,8 @@ impl StreamingIdentifierPatternRewriter {
         Ok(Self {
             prefix_finder: memmem::Finder::new(prefix).into_owned(),
             suffix: suffix.to_vec(),
-            replacement: IdentifierReplacement::Template(template.as_ref().to_vec()),
+            replacement: ExpressionReplacement::Template(template.as_ref().to_vec()),
+            syntax: PatternSyntax::Identifier,
             pending: Vec::new(),
             previous_byte: None,
             finished: false,
@@ -333,34 +367,30 @@ impl StreamingIdentifierPatternRewriter {
 
             let preceded_by_identifier = previous_byte.is_some_and(is_ascii_identifier_continue);
             match if preceded_by_identifier {
-                IdentifierPatternMatch::NoMatch
+                ExpressionPatternMatch::NoMatch
             } else {
                 self.match_candidate(consumed, end_of_stream)
             } {
-                IdentifierPatternMatch::Match(matched_len) => {
-                    let identifier_start = consumed + prefix_len;
-                    let identifier_end = self.pending[identifier_start..]
-                        .iter()
-                        .position(|byte| !is_ascii_identifier_continue(*byte))
-                        .map(|relative| identifier_start + relative)
-                        .expect("a matched identifier is followed by a suffix");
-                    let identifier = &self.pending[identifier_start..identifier_end];
+                ExpressionPatternMatch::Match(matched_len) => {
+                    let expression_start = consumed + prefix_len;
+                    let expression_end = consumed + matched_len - self.suffix.len();
+                    let expression = &self.pending[expression_start..expression_end];
                     match &self.replacement {
-                        IdentifierReplacement::Prefix(replacement_prefix) => {
+                        ExpressionReplacement::Prefix(replacement_prefix) => {
                             output.extend_from_slice(replacement_prefix);
                             output.extend_from_slice(
-                                &self.pending[identifier_start..consumed + matched_len],
+                                &self.pending[expression_start..consumed + matched_len],
                             );
                         }
-                        IdentifierReplacement::Template(template) => {
-                            render_identifier_template(&mut output, template, identifier);
+                        ExpressionReplacement::Template(template) => {
+                            render_identifier_template(&mut output, template, expression);
                         }
                     }
                     previous_byte = output.last().copied();
                     consumed += matched_len;
                 }
-                IdentifierPatternMatch::NeedMore => break,
-                IdentifierPatternMatch::NoMatch => {
+                ExpressionPatternMatch::NeedMore => break,
+                ExpressionPatternMatch::NoMatch => {
                     output.push(self.pending[consumed]);
                     previous_byte = Some(self.pending[consumed]);
                     consumed += 1;
@@ -372,58 +402,87 @@ impl StreamingIdentifierPatternRewriter {
         output
     }
 
-    fn match_candidate(&self, start: usize, end_of_stream: bool) -> IdentifierPatternMatch {
+    fn match_candidate(&self, start: usize, end_of_stream: bool) -> ExpressionPatternMatch {
         let mut cursor = start + self.prefix_finder.needle().len();
-        let Some(&first) = self.pending.get(cursor) else {
-            return if end_of_stream {
-                IdentifierPatternMatch::NoMatch
-            } else {
-                IdentifierPatternMatch::NeedMore
-            };
+        cursor = match scan_identifier_segment(&self.pending, cursor, end_of_stream) {
+            IdentifierSegmentScan::End(cursor) => cursor,
+            IdentifierSegmentScan::NeedMore => return ExpressionPatternMatch::NeedMore,
+            IdentifierSegmentScan::NoMatch => return ExpressionPatternMatch::NoMatch,
         };
-        if !is_ascii_identifier_start(first) {
-            return IdentifierPatternMatch::NoMatch;
-        }
-        cursor += 1;
 
-        while let Some(&byte) = self.pending.get(cursor) {
-            if !is_ascii_identifier_continue(byte) {
-                break;
+        if matches!(self.syntax, PatternSyntax::MemberExpression) {
+            while self.pending.get(cursor) == Some(&b'.') {
+                cursor += 1;
+                cursor = match scan_identifier_segment(&self.pending, cursor, end_of_stream) {
+                    IdentifierSegmentScan::End(cursor) => cursor,
+                    IdentifierSegmentScan::NeedMore => return ExpressionPatternMatch::NeedMore,
+                    IdentifierSegmentScan::NoMatch => return ExpressionPatternMatch::NoMatch,
+                };
             }
-            cursor += 1;
         }
 
         if cursor == self.pending.len() {
             return if end_of_stream {
-                IdentifierPatternMatch::NoMatch
+                ExpressionPatternMatch::NoMatch
             } else {
-                IdentifierPatternMatch::NeedMore
+                ExpressionPatternMatch::NeedMore
             };
         }
 
         let available = &self.pending[cursor..];
         let compared_len = available.len().min(self.suffix.len());
         if available[..compared_len] != self.suffix[..compared_len] {
-            return IdentifierPatternMatch::NoMatch;
+            return ExpressionPatternMatch::NoMatch;
         }
         if available.len() < self.suffix.len() {
             return if end_of_stream {
-                IdentifierPatternMatch::NoMatch
+                ExpressionPatternMatch::NoMatch
             } else {
-                IdentifierPatternMatch::NeedMore
+                ExpressionPatternMatch::NeedMore
             };
         }
-        IdentifierPatternMatch::Match(cursor + self.suffix.len() - start)
+        ExpressionPatternMatch::Match(cursor + self.suffix.len() - start)
     }
 }
 
-fn render_identifier_template(output: &mut Vec<u8>, template: &[u8], identifier: &[u8]) {
+enum IdentifierSegmentScan {
+    End(usize),
+    NeedMore,
+    NoMatch,
+}
+
+fn scan_identifier_segment(
+    input: &[u8],
+    mut cursor: usize,
+    end_of_stream: bool,
+) -> IdentifierSegmentScan {
+    let Some(&first) = input.get(cursor) else {
+        return if end_of_stream {
+            IdentifierSegmentScan::NoMatch
+        } else {
+            IdentifierSegmentScan::NeedMore
+        };
+    };
+    if !is_ascii_identifier_start(first) {
+        return IdentifierSegmentScan::NoMatch;
+    }
+    cursor += 1;
+    while input
+        .get(cursor)
+        .is_some_and(|byte| is_ascii_identifier_continue(*byte))
+    {
+        cursor += 1;
+    }
+    IdentifierSegmentScan::End(cursor)
+}
+
+fn render_identifier_template(output: &mut Vec<u8>, template: &[u8], expression: &[u8]) {
     const MARKER: &[u8] = b"{identifier}";
     let finder = memmem::Finder::new(MARKER);
     let mut consumed = 0;
     for position in finder.find_iter(template) {
         output.extend_from_slice(&template[consumed..position]);
-        output.extend_from_slice(identifier);
+        output.extend_from_slice(expression);
         consumed = position + MARKER.len();
     }
     output.extend_from_slice(&template[consumed..]);
