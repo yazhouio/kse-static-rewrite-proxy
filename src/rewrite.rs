@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v18";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v19";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -178,10 +178,9 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::JsBundle => StreamingRewritePipeline::new_with_identifier_pattern(
-            b"`//${window.location.host}/${",
-            b"}/consolev3`",
-            format!("`//${{window.location.host}}{base_path}/${{"),
+        RewriteProfile::JsBundle => StreamingRewritePipeline::new_with_appended_suffix(
+            b"`//${window.location.host}/",
+            format!("{}/", base_path.trim_start_matches('/')),
             max_bytes,
         ),
     }
@@ -386,18 +385,20 @@ mod tests {
     }
 
     #[test]
-    fn jsbundle_rewriter_prefixes_console_v3_base_urls_for_any_identifier_idempotently() {
+    fn jsbundle_rewriter_prefixes_window_host_urls_idempotently() {
         let input = concat!(
             r#"const bundleName="observability",ot=`${bundleName}-console-v3`,"#,
             r#"ut=`//${window.location.host}/${bundleName}/consolev3`,"#,
             r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
-            r#"const another=`//${window.location.host}/${other_2}/consolev3`;"#
+            r#"const another=`//${window.location.host}/${other_2}/consolev3`;"#,
+            r#"const fixed=`//${window.location.host}/whizard-telemetry/consolev3`;"#
         );
         let expected = concat!(
             r#"const bundleName="observability",ot=`${bundleName}-console-v3`,"#,
             r#"ut=`//${window.location.host}/regions/region:shenzhen/${bundleName}/consolev3`,"#,
             r#"{V3ModalObserver:ct}=getEmbed({name:ot,baseUrl:ut});"#,
-            r#"const another=`//${window.location.host}/regions/region:shenzhen/${other_2}/consolev3`;"#
+            r#"const another=`//${window.location.host}/regions/region:shenzhen/${other_2}/consolev3`;"#,
+            r#"const fixed=`//${window.location.host}/regions/region:shenzhen/whizard-telemetry/consolev3`;"#
         );
 
         for split in 0..=input.len() {
@@ -418,7 +419,9 @@ mod tests {
             );
             output.extend(pipeline.finish().expect("finish stream"));
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+        }
 
+        for split in 0..=expected.len() {
             let mut second_pass = build_selected_response_rewriter(
                 RewriteProfile::JsBundle,
                 "/regions/region:shenzhen",
@@ -426,12 +429,19 @@ mod tests {
                 1024,
             )
             .expect("valid rewrite rule");
-            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            let mut idempotent_output = second_pass
+                .push(&expected.as_bytes()[..split])
+                .expect("first idempotent chunk");
+            idempotent_output.extend(
+                second_pass
+                    .push(&expected.as_bytes()[split..])
+                    .expect("second idempotent chunk"),
+            );
             idempotent_output.extend(second_pass.finish().expect("finish second pass"));
             assert_eq!(
                 idempotent_output,
                 expected.as_bytes(),
-                "second pass after byte {split}"
+                "second pass split at byte {split}"
             );
         }
     }

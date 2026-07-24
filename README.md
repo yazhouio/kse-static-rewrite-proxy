@@ -41,12 +41,12 @@ For each allowlisted `{extension}`, direct JavaScript files under
 `{basePath}/jsbundles/{extension}/dist/{extension}/*.js` receive one additional rewrite:
 
 ```text
-`//${window.location.host}/${<identifier>}/consolev3`
+`//${window.location.host}/
         ->
-`//${window.location.host}{basePath}/${<identifier>}/consolev3`
+`//${window.location.host}{basePath}/
 ```
 
-The interpolated JavaScript identifier may vary between bundle builds. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
+The remainder of each matching template-string URL is preserved, whether it contains a fixed extension name or a JavaScript interpolation. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
 
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 

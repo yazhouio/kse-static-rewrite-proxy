@@ -142,17 +142,17 @@ impl StreamingRewritePipeline {
         Ok(pipeline)
     }
 
-    pub(crate) fn new_with_identifier_pattern(
-        prefix: impl AsRef<[u8]>,
-        suffix: impl AsRef<[u8]>,
-        replacement_prefix: impl AsRef<[u8]>,
+    pub(crate) fn new_with_appended_suffix(
+        source: impl AsRef<[u8]>,
+        inserted_suffix: impl AsRef<[u8]>,
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
-        let rewriter = StreamingExpressionPatternRewriter::new(prefix, suffix, replacement_prefix)?;
-        Self::from_rewriters(
-            vec![StreamingRewriter::ExpressionPattern(rewriter)],
-            max_bytes,
-        )
+        let rewriter = StreamingLiteralRewriter::new_with_appended_suffix(
+            source,
+            inserted_suffix,
+            usize::MAX,
+        )?;
+        Self::from_rewriters(vec![StreamingRewriter::Literal(rewriter)], max_bytes)
     }
 
     pub(crate) fn with_identifier_template_patterns<II, IP, IS, IT>(
@@ -500,14 +500,28 @@ fn is_ascii_identifier_continue(byte: u8) -> bool {
 #[derive(Debug)]
 pub struct StreamingLiteralRewriter {
     finder: memmem::Finder<'static>,
-    replacement: Vec<u8>,
-    inserted_prefix: Option<Vec<u8>>,
+    mode: LiteralRewriteMode,
     max_bytes: usize,
     total_bytes: usize,
     pending: Vec<u8>,
     input_history: Vec<u8>,
     utf8_tail: Vec<u8>,
     finished: bool,
+}
+
+#[derive(Debug)]
+enum LiteralRewriteMode {
+    Prepend {
+        replacement: Vec<u8>,
+        inserted_prefix: Vec<u8>,
+    },
+    Exact {
+        replacement: Vec<u8>,
+    },
+    Append {
+        replacement: Vec<u8>,
+        inserted_suffix: Vec<u8>,
+    },
 }
 
 impl StreamingLiteralRewriter {
@@ -518,25 +532,19 @@ impl StreamingLiteralRewriter {
     ) -> Result<Self, RewriteError> {
         let source = source.as_ref();
         let replacement = replacement.as_ref();
-        if source.is_empty() {
-            return Err(RewriteError::EmptySource);
-        }
         let inserted_prefix = replacement
             .strip_suffix(source)
             .ok_or(RewriteError::InvalidReplacement)?
             .to_vec();
 
-        Ok(Self {
-            finder: memmem::Finder::new(source).into_owned(),
-            replacement: replacement.to_vec(),
-            inserted_prefix: Some(inserted_prefix),
+        Self::from_mode(
+            source,
+            LiteralRewriteMode::Prepend {
+                replacement: replacement.to_vec(),
+                inserted_prefix,
+            },
             max_bytes,
-            total_bytes: 0,
-            pending: Vec::new(),
-            input_history: Vec::new(),
-            utf8_tail: Vec::new(),
-            finished: false,
-        })
+        )
     }
 
     pub fn new_exact(
@@ -545,13 +553,45 @@ impl StreamingLiteralRewriter {
         max_bytes: usize,
     ) -> Result<Self, RewriteError> {
         let source = source.as_ref();
+        Self::from_mode(
+            source,
+            LiteralRewriteMode::Exact {
+                replacement: replacement.as_ref().to_vec(),
+            },
+            max_bytes,
+        )
+    }
+
+    fn new_with_appended_suffix(
+        source: impl AsRef<[u8]>,
+        inserted_suffix: impl AsRef<[u8]>,
+        max_bytes: usize,
+    ) -> Result<Self, RewriteError> {
+        let source = source.as_ref();
+        let inserted_suffix = inserted_suffix.as_ref().to_vec();
+        let mut replacement = source.to_vec();
+        replacement.extend_from_slice(&inserted_suffix);
+        Self::from_mode(
+            source,
+            LiteralRewriteMode::Append {
+                replacement,
+                inserted_suffix,
+            },
+            max_bytes,
+        )
+    }
+
+    fn from_mode(
+        source: &[u8],
+        mode: LiteralRewriteMode,
+        max_bytes: usize,
+    ) -> Result<Self, RewriteError> {
         if source.is_empty() {
             return Err(RewriteError::EmptySource);
         }
         Ok(Self {
             finder: memmem::Finder::new(source).into_owned(),
-            replacement: replacement.as_ref().to_vec(),
-            inserted_prefix: None,
+            mode,
             max_bytes,
             total_bytes: 0,
             pending: Vec::new(),
@@ -638,7 +678,25 @@ impl StreamingLiteralRewriter {
     fn process_available(&mut self, end_of_stream: bool) -> Vec<u8> {
         let source = self.finder.needle();
         let source_len = source.len();
-        let inserted_prefix = self.inserted_prefix.as_deref();
+        let (replacement, inserted_prefix, inserted_suffix) = match &self.mode {
+            LiteralRewriteMode::Prepend {
+                replacement,
+                inserted_prefix,
+            } => (
+                replacement.as_slice(),
+                Some(inserted_prefix.as_slice()),
+                None,
+            ),
+            LiteralRewriteMode::Exact { replacement } => (replacement.as_slice(), None, None),
+            LiteralRewriteMode::Append {
+                replacement,
+                inserted_suffix,
+            } => (
+                replacement.as_slice(),
+                None,
+                Some(inserted_suffix.as_slice()),
+            ),
+        };
         let mut input_history = std::mem::take(&mut self.input_history);
         let mut output = Vec::with_capacity(self.pending.len());
         let mut consumed = 0;
@@ -650,10 +708,26 @@ impl StreamingLiteralRewriter {
                 original_input_ends_with_prefix(inserted_prefix, &input_history, before_match);
             output.extend_from_slice(before_match);
             remember_input(inserted_prefix, &mut input_history, before_match);
-            if already_prefixed {
+            let after_match = position + source_len;
+            if let Some(inserted_suffix) = inserted_suffix {
+                let available_after = &self.pending[after_match..];
+                if !end_of_stream
+                    && available_after.len() < inserted_suffix.len()
+                    && inserted_suffix.starts_with(available_after)
+                {
+                    self.input_history = input_history;
+                    self.pending.drain(..position);
+                    return output;
+                }
+                if available_after.starts_with(inserted_suffix) {
+                    output.extend_from_slice(source);
+                } else {
+                    output.extend_from_slice(replacement);
+                }
+            } else if already_prefixed {
                 output.extend_from_slice(source);
             } else {
-                output.extend_from_slice(&self.replacement);
+                output.extend_from_slice(replacement);
             }
             remember_input(inserted_prefix, &mut input_history, source);
             consumed = position + source_len;
