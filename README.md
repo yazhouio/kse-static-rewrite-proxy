@@ -75,11 +75,27 @@ rewriteSidecar:
 
 `client.basePath` is treated as an opaque, validated URL path. The sidecar does not extract a region name from it. `rewriteSidecar.upstream` is restricted to an explicit loopback HTTP address.
 
+`enabledExtensions` has three modes:
+
+- `[]` disables rewriting.
+- A list of extension names enables only those extensions.
+- `["*"]` enables every extension whose name matches
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
+
+Quote `"*"` so YAML treats it as a string. The wildcard cannot be combined with
+explicit extension names, and partial glob patterns such as `ks-*` are not
+supported. Wildcard mode changes only the extension allowlist: all request path,
+method, asset type, and response eligibility checks described above still apply.
+
 When the active rewrite limit is reached, up to `maxQueued` requests wait. A full queue receives `503` with `Retry-After: 1`.
 
 ## Response semantics
 
 Rewritten responses remove length, digest, range, and upstream representation validators that no longer describe the emitted body. A weak ETag is derived from the upstream ETag, base path, extension, and rewrite rule version. Without a reliable upstream ETag, the response uses `Cache-Control: no-store`. Rewritten assets do not support byte ranges.
+
+In wildcard mode, Prometheus metrics use `extension="*"` to keep label
+cardinality bounded. Structured request logs continue to record the actual
+extension name.
 
 ## Local development
 

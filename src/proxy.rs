@@ -66,7 +66,7 @@ struct Admission {
 impl KseRewriteProxy {
     pub fn new(config: EffectiveConfig) -> Result<Self, prometheus::Error> {
         let metrics = Metrics::new()?;
-        let policy = RewritePolicy::new(config.base_path(), config.enabled_extensions());
+        let policy = config.rewrite_policy();
         let admission = Admission {
             active: Arc::new(Semaphore::new(config.max_concurrent())),
             queued: Arc::new(Semaphore::new(config.max_queued())),
@@ -358,6 +358,11 @@ impl ProxyHttp for KseRewriteProxy {
             self.metrics.active.dec();
         }
         let extension = ctx.extension.as_deref().unwrap_or("none");
+        let metrics_extension = ctx
+            .extension
+            .as_deref()
+            .map(|extension| self.policy.metrics_extension_label(extension))
+            .unwrap_or("none");
         let outcome = if error_value.is_some() {
             "error"
         } else {
@@ -365,7 +370,7 @@ impl ProxyHttp for KseRewriteProxy {
         };
         self.metrics
             .requests
-            .with_label_values(&[outcome, extension])
+            .with_label_values(&[outcome, metrics_extension])
             .inc();
         self.metrics
             .duration
@@ -374,11 +379,11 @@ impl ProxyHttp for KseRewriteProxy {
         if ctx.input_bytes > 0 {
             self.metrics
                 .rewrite_input_bytes
-                .with_label_values(&[extension])
+                .with_label_values(&[metrics_extension])
                 .inc_by(ctx.input_bytes as u64);
             self.metrics
                 .rewrite_output_bytes
-                .with_label_values(&[extension])
+                .with_label_values(&[metrics_extension])
                 .inc_by(ctx.output_bytes as u64);
         }
 

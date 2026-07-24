@@ -31,6 +31,45 @@ rewriteSidecar:
 }
 
 #[test]
+fn accepts_all_extensions_wildcard() {
+    let config = EffectiveConfig::from_yaml(
+        r#"
+client:
+  basePath: /regions/region:shenzhen
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    enabledExtensions: ["*"]
+"#,
+    )
+    .expect("standalone wildcard enables every safe extension");
+
+    assert_eq!(config.enabled_extensions(), ["*"]);
+}
+
+#[test]
+fn rejects_wildcard_mixed_with_explicit_extensions() {
+    let error = EffectiveConfig::from_yaml(
+        r#"
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    enabledExtensions: ["*", ks-console-embed]
+"#,
+    )
+    .expect_err("wildcard cannot be combined with explicit extensions");
+
+    assert_eq!(
+        error.to_string(),
+        "rewriteSidecar.rewrite.enabledExtensions cannot combine \"*\" with extension names"
+    );
+}
+
+#[test]
 fn rejects_overlapping_proxy_admin_and_upstream_sockets() {
     for (listen, admin_listen, upstream) in [
         ("0.0.0.0:8080", "127.0.0.1:8080", "http://127.0.0.1:8000"),

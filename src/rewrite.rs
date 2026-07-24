@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
 pub(crate) const REWRITE_RULE_VERSION: &str = "v18";
+pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
@@ -23,7 +24,13 @@ pub enum RewriteDecision {
 #[derive(Debug, Clone)]
 pub struct RewritePolicy {
     base_path: String,
-    enabled_extensions: HashSet<String>,
+    extensions: ExtensionMatcher,
+}
+
+#[derive(Debug, Clone)]
+enum ExtensionMatcher {
+    All,
+    Allowlist(HashSet<String>),
 }
 
 impl RewritePolicy {
@@ -32,13 +39,37 @@ impl RewritePolicy {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Self {
-            base_path: base_path.into().trim_end_matches('/').to_string(),
-            enabled_extensions: enabled_extensions
-                .into_iter()
-                .map(|extension| extension.as_ref().to_string())
-                .collect(),
-        }
+        let enabled_extensions: HashSet<String> = enabled_extensions
+            .into_iter()
+            .map(|extension| extension.as_ref().to_string())
+            .collect();
+        let extensions = if enabled_extensions.len() == 1
+            && enabled_extensions.contains(ALL_EXTENSIONS_WILDCARD)
+        {
+            ExtensionMatcher::All
+        } else {
+            ExtensionMatcher::Allowlist(enabled_extensions)
+        };
+        Self::from_matcher(base_path, extensions)
+    }
+
+    pub fn for_all_extensions(base_path: impl Into<String>) -> Self {
+        Self::from_matcher(base_path, ExtensionMatcher::All)
+    }
+
+    pub fn for_allowlisted_extensions<I, S>(
+        base_path: impl Into<String>,
+        enabled_extensions: I,
+    ) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let enabled_extensions = enabled_extensions
+            .into_iter()
+            .map(|extension| extension.as_ref().to_string())
+            .collect();
+        Self::from_matcher(base_path, ExtensionMatcher::Allowlist(enabled_extensions))
     }
 
     pub fn decide(&self, method: &str, path: &str) -> RewriteDecision {
@@ -54,7 +85,7 @@ impl RewritePolicy {
             && let Some(asset_path) = distribution_path
                 .strip_prefix(extension)
                 .and_then(|path| path.strip_prefix('/'))
-            && self.enabled_extensions.contains(extension)
+            && self.is_extension_enabled(extension)
             && !asset_path.is_empty()
             && !asset_path.contains('/')
             && asset_path.ends_with(".js")
@@ -76,7 +107,7 @@ impl RewritePolicy {
         if extension.is_empty()
             || asset_path.is_empty()
             || extension.contains('/')
-            || !self.enabled_extensions.contains(extension)
+            || !self.is_extension_enabled(extension)
             || !is_text_asset(asset_path)
         {
             return RewriteDecision::Bypass;
@@ -88,6 +119,39 @@ impl RewritePolicy {
             head_only: method.eq_ignore_ascii_case("HEAD"),
         }
     }
+
+    pub fn metrics_extension_label<'a>(&self, extension: &'a str) -> &'a str {
+        match self.extensions {
+            ExtensionMatcher::All => ALL_EXTENSIONS_WILDCARD,
+            ExtensionMatcher::Allowlist(_) => extension,
+        }
+    }
+
+    fn is_extension_enabled(&self, extension: &str) -> bool {
+        is_safe_extension_name(extension)
+            && match &self.extensions {
+                ExtensionMatcher::All => true,
+                ExtensionMatcher::Allowlist(enabled_extensions) => {
+                    enabled_extensions.contains(extension)
+                }
+            }
+    }
+
+    fn from_matcher(base_path: impl Into<String>, extensions: ExtensionMatcher) -> Self {
+        Self {
+            base_path: base_path.into().trim_end_matches('/').to_string(),
+            extensions,
+        }
+    }
+}
+
+pub(crate) fn is_safe_extension_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && value.as_bytes()[0].is_ascii_alphanumeric()
 }
 
 fn is_text_asset(asset_path: &str) -> bool {

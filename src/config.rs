@@ -6,6 +6,8 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
+use crate::rewrite::{ALL_EXTENSIONS_WILDCARD, RewritePolicy, is_safe_extension_name};
+
 const MAX_BASE_PATH_LENGTH: usize = 1024;
 const DEFAULT_MAX_DECODED_BYTES: usize = 20 * 1024 * 1024;
 const DEFAULT_MAX_CONCURRENT: usize = 4;
@@ -41,6 +43,8 @@ pub enum ConfigError {
     InvalidUpstream(String),
     #[error("rewriteSidecar.rewrite.enabledExtensions contains invalid extension name: {0}")]
     InvalidExtension(String),
+    #[error("rewriteSidecar.rewrite.enabledExtensions cannot combine \"*\" with extension names")]
+    WildcardWithExtensions,
     #[error("rewriteSidecar.rewrite.enabledExtensions contains duplicate extension name: {0}")]
     DuplicateExtension(String),
     #[error("rewriteSidecar.rewrite.{0} must be greater than zero")]
@@ -129,13 +133,23 @@ impl EffectiveConfig {
             return Err(ConfigError::NonPositiveLimit("maxConcurrent"));
         }
 
-        let mut seen = HashSet::new();
-        for extension in &rewrite.enabled_extensions {
-            if !is_safe_extension_name(extension) {
-                return Err(ConfigError::InvalidExtension(extension.clone()));
+        if rewrite
+            .enabled_extensions
+            .iter()
+            .any(|extension| extension == ALL_EXTENSIONS_WILDCARD)
+        {
+            if rewrite.enabled_extensions.len() != 1 {
+                return Err(ConfigError::WildcardWithExtensions);
             }
-            if !seen.insert(extension.clone()) {
-                return Err(ConfigError::DuplicateExtension(extension.clone()));
+        } else {
+            let mut seen = HashSet::new();
+            for extension in &rewrite.enabled_extensions {
+                if !is_safe_extension_name(extension) {
+                    return Err(ConfigError::InvalidExtension(extension.clone()));
+                }
+                if !seen.insert(extension.clone()) {
+                    return Err(ConfigError::DuplicateExtension(extension.clone()));
+                }
             }
         }
 
@@ -169,6 +183,14 @@ impl EffectiveConfig {
 
     pub fn enabled_extensions(&self) -> &[String] {
         &self.enabled_extensions
+    }
+
+    pub(crate) fn rewrite_policy(&self) -> RewritePolicy {
+        if self.enabled_extensions == [ALL_EXTENSIONS_WILDCARD] {
+            RewritePolicy::for_all_extensions(&self.base_path)
+        } else {
+            RewritePolicy::for_allowlisted_extensions(&self.base_path, &self.enabled_extensions)
+        }
     }
 
     pub fn max_decoded_bytes(&self) -> usize {
@@ -325,13 +347,4 @@ fn decode_repeatedly(value: &str) -> Result<String, ConfigError> {
         decoded = next;
     }
     Ok(decoded)
-}
-
-fn is_safe_extension_name(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        && value.as_bytes()[0].is_ascii_alphanumeric()
 }
