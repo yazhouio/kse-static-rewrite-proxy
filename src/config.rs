@@ -20,6 +20,7 @@ pub struct EffectiveConfig {
     admin_listen: SocketAddr,
     upstream: SocketAddr,
     enabled_extensions: Vec<String>,
+    disabled_extensions: Vec<String>,
     max_decoded_bytes: usize,
     max_concurrent: usize,
     max_queued: usize,
@@ -41,12 +42,18 @@ pub enum ConfigError {
     ListenerOverlapsUpstream(&'static str),
     #[error("rewriteSidecar.upstream {0}")]
     InvalidUpstream(String),
-    #[error("rewriteSidecar.rewrite.enabledExtensions contains invalid extension name: {0}")]
-    InvalidExtension(String),
+    #[error("rewriteSidecar.rewrite.{field} contains invalid extension name: {extension}")]
+    InvalidExtension {
+        field: &'static str,
+        extension: String,
+    },
     #[error("rewriteSidecar.rewrite.enabledExtensions cannot combine \"*\" with extension names")]
     WildcardWithExtensions,
-    #[error("rewriteSidecar.rewrite.enabledExtensions contains duplicate extension name: {0}")]
-    DuplicateExtension(String),
+    #[error("rewriteSidecar.rewrite.{field} contains duplicate extension name: {extension}")]
+    DuplicateExtension {
+        field: &'static str,
+        extension: String,
+    },
     #[error("rewriteSidecar.rewrite.{0} must be greater than zero")]
     NonPositiveLimit(&'static str),
 }
@@ -81,6 +88,8 @@ struct RawSidecarConfig {
 struct RawRewriteConfig {
     #[serde(rename = "enabledExtensions")]
     enabled_extensions: Vec<String>,
+    #[serde(rename = "disabledExtensions")]
+    disabled_extensions: Vec<String>,
     #[serde(rename = "maxDecodedBytes")]
     max_decoded_bytes: usize,
     #[serde(rename = "maxConcurrent")]
@@ -93,6 +102,7 @@ impl Default for RawRewriteConfig {
     fn default() -> Self {
         Self {
             enabled_extensions: Vec::new(),
+            disabled_extensions: Vec::new(),
             max_decoded_bytes: DEFAULT_MAX_DECODED_BYTES,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             max_queued: DEFAULT_MAX_QUEUED,
@@ -142,16 +152,9 @@ impl EffectiveConfig {
                 return Err(ConfigError::WildcardWithExtensions);
             }
         } else {
-            let mut seen = HashSet::new();
-            for extension in &rewrite.enabled_extensions {
-                if !is_safe_extension_name(extension) {
-                    return Err(ConfigError::InvalidExtension(extension.clone()));
-                }
-                if !seen.insert(extension.clone()) {
-                    return Err(ConfigError::DuplicateExtension(extension.clone()));
-                }
-            }
+            validate_explicit_extensions("enabledExtensions", &rewrite.enabled_extensions)?;
         }
+        validate_explicit_extensions("disabledExtensions", &rewrite.disabled_extensions)?;
 
         Ok(Self {
             base_path,
@@ -159,6 +162,7 @@ impl EffectiveConfig {
             admin_listen,
             upstream,
             enabled_extensions: rewrite.enabled_extensions,
+            disabled_extensions: rewrite.disabled_extensions,
             max_decoded_bytes: rewrite.max_decoded_bytes,
             max_concurrent: rewrite.max_concurrent,
             max_queued: rewrite.max_queued,
@@ -185,12 +189,16 @@ impl EffectiveConfig {
         &self.enabled_extensions
     }
 
+    pub fn disabled_extensions(&self) -> &[String] {
+        &self.disabled_extensions
+    }
+
     pub(crate) fn rewrite_policy(&self) -> RewritePolicy {
-        if self.enabled_extensions == [ALL_EXTENSIONS_WILDCARD] {
-            RewritePolicy::for_all_extensions(&self.base_path)
-        } else {
-            RewritePolicy::for_allowlisted_extensions(&self.base_path, &self.enabled_extensions)
-        }
+        RewritePolicy::new_with_disabled_extensions(
+            &self.base_path,
+            &self.enabled_extensions,
+            &self.disabled_extensions,
+        )
     }
 
     pub fn max_decoded_bytes(&self) -> usize {
@@ -204,6 +212,28 @@ impl EffectiveConfig {
     pub fn max_queued(&self) -> usize {
         self.max_queued
     }
+}
+
+fn validate_explicit_extensions(
+    field: &'static str,
+    extensions: &[String],
+) -> Result<(), ConfigError> {
+    let mut seen = HashSet::new();
+    for extension in extensions {
+        if !is_safe_extension_name(extension) {
+            return Err(ConfigError::InvalidExtension {
+                field,
+                extension: extension.clone(),
+            });
+        }
+        if !seen.insert(extension) {
+            return Err(ConfigError::DuplicateExtension {
+                field,
+                extension: extension.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn default_admin_listen() -> String {

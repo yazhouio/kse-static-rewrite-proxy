@@ -23,7 +23,8 @@ Console V3 responses are eligible only when all conditions hold:
 
 - Request method is `GET` or `HEAD`.
 - Request path is `{basePath}/extensions-static/{extension}/dist/v3dist/**`.
-- `{extension}` is in `rewriteSidecar.rewrite.enabledExtensions`.
+- `{extension}` is enabled by `rewriteSidecar.rewrite.enabledExtensions` and is
+  not in `rewriteSidecar.rewrite.disabledExtensions`.
 - Asset suffix is `.js`, `.mjs`, `.css`, `.json`, `.html`, or `.htm`.
 - Upstream returns `200`, a supported UTF-8 text `Content-Type`, and no content encoding after the sidecar requests `identity`.
 
@@ -68,6 +69,8 @@ rewriteSidecar:
     enabledExtensions:
       - ks-console-embed
       - kubeeye
+    disabledExtensions:
+      - whizard-telemetry
     maxDecodedBytes: 20971520
     maxConcurrent: 4
     maxQueued: 32
@@ -86,6 +89,11 @@ Quote `"*"` so YAML treats it as a string. The wildcard cannot be combined with
 explicit extension names, and partial glob patterns such as `ks-*` are not
 supported. Wildcard mode changes only the extension allowlist: all request path,
 method, asset type, and response eligibility checks described above still apply.
+
+`disabledExtensions` is an optional list of explicit extension names. It always
+takes precedence over `enabledExtensions`, including when
+`enabledExtensions: ["*"]`. Disabled names must use the same safe extension-name
+format, must be unique, and cannot contain `"*"` or partial glob patterns.
 
 When the active rewrite limit is reached, up to `maxQueued` requests wait. A full queue receives `503` with `Retry-After: 1`.
 

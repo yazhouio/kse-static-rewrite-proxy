@@ -13,6 +13,8 @@ rewriteSidecar:
   rewrite:
     enabledExtensions:
       - ks-console-embed
+    disabledExtensions:
+      - whizard-telemetry
     maxDecodedBytes: 20971520
     maxConcurrent: 4
     maxQueued: 32
@@ -25,6 +27,7 @@ rewriteSidecar:
     assert_eq!(config.admin_listen().to_string(), "0.0.0.0:9090");
     assert_eq!(config.upstream().to_string(), "127.0.0.1:8000");
     assert_eq!(config.enabled_extensions(), ["ks-console-embed"]);
+    assert_eq!(config.disabled_extensions(), ["whizard-telemetry"]);
     assert_eq!(config.max_decoded_bytes(), 20_971_520);
     assert_eq!(config.max_concurrent(), 4);
     assert_eq!(config.max_queued(), 32);
@@ -47,6 +50,7 @@ rewriteSidecar:
     .expect("standalone wildcard enables every safe extension");
 
     assert_eq!(config.enabled_extensions(), ["*"]);
+    assert!(config.disabled_extensions().is_empty());
 }
 
 #[test]
@@ -67,6 +71,35 @@ rewriteSidecar:
         error.to_string(),
         "rewriteSidecar.rewrite.enabledExtensions cannot combine \"*\" with extension names"
     );
+}
+
+#[test]
+fn rejects_invalid_or_duplicate_disabled_extensions() {
+    for (disabled_extensions, expected_error) in [
+        (
+            "[\"*\"]",
+            "rewriteSidecar.rewrite.disabledExtensions contains invalid extension name: *",
+        ),
+        (
+            "[whizard-telemetry, whizard-telemetry]",
+            "rewriteSidecar.rewrite.disabledExtensions contains duplicate extension name: whizard-telemetry",
+        ),
+    ] {
+        let yaml = format!(
+            r#"
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    enabledExtensions: ["*"]
+    disabledExtensions: {disabled_extensions}
+"#
+        );
+        let error = EffectiveConfig::from_yaml(&yaml)
+            .expect_err("disabled extension names must be explicit, safe, and unique");
+        assert_eq!(error.to_string(), expected_error);
+    }
 }
 
 #[test]

@@ -121,6 +121,50 @@ fn wildcard_enables_both_rewrite_profiles_for_safe_extension_names() {
 }
 
 #[test]
+fn disabled_extensions_override_wildcard_for_both_rewrite_profiles() {
+    let policy = RewritePolicy::new_with_disabled_extensions(
+        "/regions/region:shenzhen",
+        ["*"],
+        ["whizard-telemetry"],
+    );
+
+    for path in [
+        "/regions/region:shenzhen/extensions-static/whizard-telemetry/dist/v3dist/main.js",
+        "/regions/region:shenzhen/jsbundles/whizard-telemetry/dist/whizard-telemetry/index.js",
+    ] {
+        assert_eq!(policy.decide("GET", path), RewriteDecision::Bypass);
+    }
+
+    assert!(matches!(
+        policy.decide(
+            "GET",
+            "/regions/region:shenzhen/extensions-static/kubeeye/dist/v3dist/main.js"
+        ),
+        RewriteDecision::Rewrite { .. }
+    ));
+
+    let allowlist = RewritePolicy::new_with_disabled_extensions(
+        "/regions/region:shenzhen",
+        ["whizard-telemetry", "kubeeye"],
+        ["whizard-telemetry"],
+    );
+    assert_eq!(
+        allowlist.decide(
+            "GET",
+            "/regions/region:shenzhen/extensions-static/whizard-telemetry/dist/v3dist/main.js"
+        ),
+        RewriteDecision::Bypass
+    );
+    assert!(matches!(
+        allowlist.decide(
+            "GET",
+            "/regions/region:shenzhen/extensions-static/kubeeye/dist/v3dist/main.js"
+        ),
+        RewriteDecision::Rewrite { .. }
+    ));
+}
+
+#[test]
 fn wildcard_rejects_unsafe_extension_names_from_request_paths() {
     let policy = RewritePolicy::for_all_extensions("/regions/region:shenzhen");
     let too_long = "a".repeat(129);

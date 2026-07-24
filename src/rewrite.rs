@@ -25,6 +25,7 @@ pub enum RewriteDecision {
 pub struct RewritePolicy {
     base_path: String,
     extensions: ExtensionMatcher,
+    disabled_extensions: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,24 @@ impl RewritePolicy {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        Self::new_with_disabled_extensions(
+            base_path,
+            enabled_extensions,
+            std::iter::empty::<&'static str>(),
+        )
+    }
+
+    pub fn new_with_disabled_extensions<EI, ES, DI, DS>(
+        base_path: impl Into<String>,
+        enabled_extensions: EI,
+        disabled_extensions: DI,
+    ) -> Self
+    where
+        EI: IntoIterator<Item = ES>,
+        ES: AsRef<str>,
+        DI: IntoIterator<Item = DS>,
+        DS: AsRef<str>,
+    {
         let enabled_extensions: HashSet<String> = enabled_extensions
             .into_iter()
             .map(|extension| extension.as_ref().to_string())
@@ -50,11 +69,15 @@ impl RewritePolicy {
         } else {
             ExtensionMatcher::Allowlist(enabled_extensions)
         };
-        Self::from_matcher(base_path, extensions)
+        let disabled_extensions = disabled_extensions
+            .into_iter()
+            .map(|extension| extension.as_ref().to_string())
+            .collect();
+        Self::from_matcher(base_path, extensions, disabled_extensions)
     }
 
     pub fn for_all_extensions(base_path: impl Into<String>) -> Self {
-        Self::from_matcher(base_path, ExtensionMatcher::All)
+        Self::new(base_path, [ALL_EXTENSIONS_WILDCARD])
     }
 
     pub fn for_allowlisted_extensions<I, S>(
@@ -65,11 +88,7 @@ impl RewritePolicy {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let enabled_extensions = enabled_extensions
-            .into_iter()
-            .map(|extension| extension.as_ref().to_string())
-            .collect();
-        Self::from_matcher(base_path, ExtensionMatcher::Allowlist(enabled_extensions))
+        Self::new(base_path, enabled_extensions)
     }
 
     pub fn decide(&self, method: &str, path: &str) -> RewriteDecision {
@@ -129,6 +148,7 @@ impl RewritePolicy {
 
     fn is_extension_enabled(&self, extension: &str) -> bool {
         is_safe_extension_name(extension)
+            && !self.disabled_extensions.contains(extension)
             && match &self.extensions {
                 ExtensionMatcher::All => true,
                 ExtensionMatcher::Allowlist(enabled_extensions) => {
@@ -137,10 +157,15 @@ impl RewritePolicy {
             }
     }
 
-    fn from_matcher(base_path: impl Into<String>, extensions: ExtensionMatcher) -> Self {
+    fn from_matcher(
+        base_path: impl Into<String>,
+        extensions: ExtensionMatcher,
+        disabled_extensions: HashSet<String>,
+    ) -> Self {
         Self {
             base_path: base_path.into().trim_end_matches('/').to_string(),
             extensions,
+            disabled_extensions,
         }
     }
 }
