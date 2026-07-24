@@ -3,7 +3,7 @@
 commit_message_file=${1:?missing commit message file}
 subject=$(sed -n '1p' "$commit_message_file")
 
-conventional_pattern='^[a-z][a-z0-9-]*(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]].*$'
+conventional_pattern='^(feat|fix|docs|refactor|perf|test|build|ci|chore|style|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]].*$'
 
 if printf '%s\n' "$subject" | grep -Eq "$conventional_pattern"; then
   exit 0
