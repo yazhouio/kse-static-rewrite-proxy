@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v27";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v28";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_NAME: &str = "kubekey";
@@ -131,9 +131,7 @@ impl RewritePolicy {
         let jsbundle_prefix = format!("{}/jsbundles/", self.base_path);
         if let Some(bundle_path) = path.strip_prefix(&jsbundle_prefix)
             && let Some((extension, distribution_path)) = bundle_path.split_once("/dist/")
-            && let Some(asset_path) = distribution_path
-                .strip_prefix(extension)
-                .and_then(|path| path.strip_prefix('/'))
+            && let Some(asset_path) = jsbundle_asset_path(extension, distribution_path)
             && self.is_extension_enabled(extension)
             && !asset_path.is_empty()
             && !asset_path.contains('/')
@@ -229,6 +227,21 @@ fn is_text_asset(asset_path: &str) -> bool {
     [".js", ".mjs", ".css", ".json", ".html", ".htm"]
         .iter()
         .any(|suffix| filename.ends_with(suffix))
+}
+
+fn jsbundle_asset_path<'a>(extension: &str, distribution_path: &'a str) -> Option<&'a str> {
+    distribution_path
+        .strip_prefix(extension)
+        .and_then(|path| path.strip_prefix('/'))
+        .or_else(|| {
+            extension
+                .strip_suffix("-frontend")
+                .and_then(|distribution_name| {
+                    distribution_path
+                        .strip_prefix(distribution_name)
+                        .and_then(|path| path.strip_prefix('/'))
+                })
+        })
 }
 
 pub(crate) fn build_selected_response_rewriter(

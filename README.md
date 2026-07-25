@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### 当前重写规则统计（v27）
+### 当前重写规则统计（v28）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -29,8 +29,8 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 | # | 处理规则 | 请求路径 | 响应要求 | 内容修改 |
 |---|---|---|---|---|
 | 1 | Console V3 静态资源 | `{basePath}/extensions-static/{extension}/dist/v3dist/**` | 已启用且未禁用的扩展；文件后缀为 `.js`、`.mjs`、`.css`、`.json`、`.html` 或 `.htm`；支持的 UTF-8 文本类型 | 为扩展静态资源根路径添加 `basePath`，并兼容独立 `/extensions-static/`、React Router `basename` 和相对 API URL 规范化逻辑 |
-| 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{extension}/*.js` | 已启用且未禁用的扩展；只匹配当前目录的直接 `.js` 文件，不匹配更深层文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
-| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
+| 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` | 已启用且未禁用的扩展；`distribution` 等于 `extension`，或外层为 `{name}-frontend` 时等于 `{name}`；只匹配当前目录的直接 `.js` 文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
+| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` 或 `.../dist/{name}/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址 |
 | 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 通常将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}`；Kubekey 仅替换完整的双引号字符串 `"/proxy/kubekey"` |
 | 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 将完整的双引号字符串 `"/proxy/kubekey"` 添加 `basePath`，并额外将 `/kapis/kubekey.kubesphere.io` 添加 `basePath`；更长的 `/proxy/kubekey/...` 字符串不匹配 |
@@ -89,8 +89,20 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 #### 2. JSBundle
 
 只匹配
-`{basePath}/jsbundles/{extension}/dist/{extension}/*.js` 当前目录下的直接
-JavaScript 文件；`{extension}` 必须启用且未禁用。更深层的 `.js` 文件不匹配。
+`{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` 当前目录下的直接
+JavaScript 文件；`{extension}` 必须启用且未禁用。`distribution` 支持：
+
+- 与外层 `{extension}` 完全相同。
+- 当外层是 `{name}-frontend` 时，使用去掉 `-frontend` 的 `{name}`。
+
+例如以下两种路径都匹配：
+
+```text
+.../jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js
+.../jsbundles/ks-autoscaling-frontend/dist/ks-autoscaling/index.js
+```
+
+其他任意不一致的 dist 名称以及更深层的 `.js` 文件不匹配。
 
 ```text
 `//${window.location.host}/
@@ -103,10 +115,10 @@ JavaScript 文件；`{extension}` 必须启用且未禁用。更深层的 `.js` 
 
 #### 3. Frontend Index JSBundle
 
-精确匹配已启用且未禁用的
-`{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js`，内容修改与
-JSBundle 相同。它额外接受 `text/plain`：可以不声明 charset；如果声明，只接受
-`utf-8` 或 `utf8`。
+匹配已启用且未禁用的 `{name}-frontend` 外层扩展，其 dist 目录可以是完整的
+`{name}-frontend`，也可以是去掉后缀的 `{name}`，文件名必须是 `index.js`。
+内容修改与 JSBundle 相同。它额外接受 `text/plain`：可以不声明 charset；如果
+声明，只接受 `utf-8` 或 `utf8`。
 
 #### 4. Named Proxy HTML
 
