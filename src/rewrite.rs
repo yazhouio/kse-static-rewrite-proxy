@@ -2,10 +2,10 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v26";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v27";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
-const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
+const KUBEKEY_NAME: &str = "kubekey";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +113,7 @@ impl RewritePolicy {
                 let is_javascript_asset = !asset_path.is_empty() && asset_path.ends_with(".js");
                 return RewriteDecision::Rewrite {
                     profile: if is_javascript_asset
-                        && name == "kubekey"
+                        && name == KUBEKEY_NAME
                         && asset_path.starts_with("assets/")
                     {
                         RewriteProfile::KubekeyAssetJs
@@ -256,27 +256,31 @@ pub(crate) fn build_selected_response_rewriter(
             )
         }
         RewriteProfile::KubekeyAssetJs => {
-            let proxy_source = KUBEKEY_PROXY_PATH.trim_end_matches('/').as_bytes().to_vec();
             let kapis_source = KUBEKEY_KAPIS_PATH.as_bytes().to_vec();
-            let proxy_replacement = [base_path.as_bytes(), proxy_source.as_slice()].concat();
             let kapis_replacement = [base_path.as_bytes(), kapis_source.as_slice()].concat();
-            StreamingRewritePipeline::new(
-                [
-                    (proxy_source, proxy_replacement),
-                    (kapis_source, kapis_replacement),
-                ],
+            StreamingRewritePipeline::new_with_exact(
+                [(kapis_source, kapis_replacement)],
+                [kubekey_proxy_exact_rule(base_path)],
                 max_bytes,
             )
         }
         RewriteProfile::ProxyJs => {
             let source = format!("{NAMED_PROXY_ROOT}{extension}");
-            StreamingRewritePipeline::new(
-                [(
-                    source.as_bytes(),
-                    format!("{base_path}{source}").into_bytes(),
-                )],
-                max_bytes,
-            )
+            if extension == KUBEKEY_NAME {
+                StreamingRewritePipeline::new_with_exact(
+                    std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
+                    [kubekey_proxy_exact_rule(base_path)],
+                    max_bytes,
+                )
+            } else {
+                StreamingRewritePipeline::new(
+                    [(
+                        source.as_bytes(),
+                        format!("{base_path}{source}").into_bytes(),
+                    )],
+                    max_bytes,
+                )
+            }
         }
         RewriteProfile::NamedProxyHtml => {
             let proxy_root = format!("{NAMED_PROXY_ROOT}{extension}/");
@@ -299,6 +303,14 @@ pub(crate) fn build_selected_response_rewriter(
             )
         }
     }
+}
+
+fn kubekey_proxy_exact_rule(base_path: &str) -> (Vec<u8>, Vec<u8>) {
+    let proxy_path = format!("{NAMED_PROXY_ROOT}{KUBEKEY_NAME}");
+    (
+        format!("\"{proxy_path}\"").into_bytes(),
+        format!("\"{base_path}{proxy_path}\"").into_bytes(),
+    )
 }
 
 pub(crate) fn build_response_rewriter(
@@ -603,9 +615,9 @@ mod tests {
     }
 
     #[test]
-    fn named_proxy_js_rewriter_prefixes_its_own_proxy_root_idempotently() {
-        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const other="/proxy/another-app";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/regions/region:region-04/proxy/kubekey/assets/data.json";const other="/proxy/another-app";"#;
+    fn kubekey_proxy_js_rewriter_only_prefixes_exact_double_quoted_root_idempotently() {
+        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
@@ -644,9 +656,26 @@ mod tests {
     }
 
     #[test]
+    fn non_kubekey_proxy_js_rewriter_keeps_prefix_behavior() {
+        let input = r#"const root="/proxy/ys1000";const asset="/proxy/ys1000/assets/data.json";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/ys1000";const asset="/regions/region:region-04/proxy/ys1000/assets/data.json";"#;
+        let mut pipeline = build_selected_response_rewriter(
+            RewriteProfile::ProxyJs,
+            "/regions/region:region-04",
+            "ys1000",
+            1024,
+        )
+        .expect("valid rewrite rule");
+        let mut output = pipeline.push(input.as_bytes()).expect("rewrite input");
+        output.extend(pipeline.finish().expect("finish stream"));
+
+        assert_eq!(output, expected.as_bytes());
+    }
+
+    #[test]
     fn kubekey_asset_js_rewriter_prefixes_proxy_and_kapis_roots_idempotently() {
-        let input = r#"const ui="/proxy/kubekey/assets/data.json";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
-        let expected = r#"const ui="/regions/region:region-04/proxy/kubekey/assets/data.json";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let input = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(

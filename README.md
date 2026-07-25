@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### 当前重写规则统计（v26）
+### 当前重写规则统计（v27）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -32,8 +32,8 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 | 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{extension}/*.js` | 已启用且未禁用的扩展；只匹配当前目录的直接 `.js` 文件，不匹配更深层文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
 | 3 | Frontend Index JSBundle | `{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址 |
-| 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}` |
-| 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 除 `/proxy/kubekey` 外，额外将 `/kapis/kubekey.kubesphere.io` 添加 `basePath` |
+| 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 通常将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}`；Kubekey 仅替换完整的双引号字符串 `"/proxy/kubekey"` |
+| 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 将完整的双引号字符串 `"/proxy/kubekey"` 添加 `basePath`，并额外将 `/kapis/kubekey.kubesphere.io` 添加 `basePath`；更长的 `/proxy/kubekey/...` 字符串不匹配 |
 
 公共行为：
 
@@ -97,7 +97,9 @@ types, including binary assets below the same path, pass through unchanged.
 
 JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
 independently of the extension allowlist. Within a selected response, the
-matching fixed `/proxy/{name}` root becomes `{basePath}/proxy/{name}`.
+matching fixed `/proxy/{name}` root becomes `{basePath}/proxy/{name}`. As a
+narrow exception, Kubekey only rewrites the exact double-quoted string
+`"/proxy/kubekey"`; longer paths and other quote styles are unchanged.
 
 Kubekey JavaScript below `{basePath}/proxy/kubekey/assets/` additionally
 rewrites `/kapis/kubekey.kubesphere.io` to
