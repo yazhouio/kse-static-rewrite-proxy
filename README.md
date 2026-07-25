@@ -45,31 +45,52 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
   HTTP 分块边界并保持幂等。
 - 由 Named Proxy HTML 规则选中的候选响应，如果最终 Content-Type 不是
   HTML/XHTML，则不会返回 502，并保留 Range 与条件缓存请求语义；图片、字体、
-  视频等二进制资源原样旁路。
+  视频等二进制资源的正文内容不修改，但候选请求仍会向上游请求 identity 编码。
 - Named Proxy JavaScript 的优先级高于通用 HTML；Kubekey assets JavaScript
   的优先级又高于普通 Named Proxy JavaScript。
 
-Console V3 responses are eligible only when all conditions hold:
+### 完整规则明细
 
-- Request method is `GET` or `HEAD`.
-- Request path is `{basePath}/extensions-static/{extension}/dist/v3dist/**`.
-- `{extension}` is enabled by `rewriteSidecar.rewrite.enabledExtensions` and is
-  not in `rewriteSidecar.rewrite.disabledExtensions`.
-- Asset suffix is `.js`, `.mjs`, `.css`, `.json`, `.html`, or `.htm`.
-- Upstream returns `200`, a supported UTF-8 text `Content-Type`, and no content encoding after the sidecar requests `identity`.
+#### 1. Console V3 静态资源
 
-The response body is rewritten as a stream:
+路径必须匹配
+`{basePath}/extensions-static/{extension}/dist/v3dist/**`，扩展必须启用且未禁用，
+最终文件名必须以 `.js`、`.mjs`、`.css`、`.json`、`.html` 或 `.htm`
+结尾。选中的响应包含以下兼容处理：
 
-```text
-/extensions-static/{extension}/dist/v3dist/
-        ->
-{basePath}/extensions-static/{extension}/dist/v3dist/
-```
+1. 扩展专属根路径：
 
-Some legacy extension bundles construct locale URLs at runtime from a standalone `/extensions-static/` string plus the extension name. Within the same eligible, allowlisted V3 text response only, the pipeline also rewrites that standalone root to `{basePath}/extensions-static/`. It adjusts the legacy Console V3 React Router `basename` expression so browser history retains `{basePath}`, and prefixes relative API URLs produced by the bundle's centralized request normalizer. That keeps isolated authentication cookies usable without changing their `Path`. These rules remain scoped to the selected extension response; they do not rewrite API response bodies or binary assets.
+   ```text
+   /extensions-static/{extension}/dist/v3dist/
+           ->
+   {basePath}/extensions-static/{extension}/dist/v3dist/
+   ```
 
-For each allowlisted `{extension}`, direct JavaScript files under
-`{basePath}/jsbundles/{extension}/dist/{extension}/*.js` receive one additional rewrite:
+2. 独立静态根路径：
+
+   ```text
+   /extensions-static/
+           ->
+   {basePath}/extensions-static/
+   ```
+
+3. React Router `basename`：识别常见的压缩、非压缩和转义
+   `basename: "".concat(..., "/consolev3")` 形式，在 `concat` 前加入
+   `{basePath}/`。
+4. API URL 规范化：为相对 URL 添加 `basePath`，已经带 `basePath` 的 URL
+   保持不变。
+5. 绝对 URL 保护：`http://`、`https://` 和协议相对 URL `//...` 不添加
+   `basePath`。
+6. 相对路径拼接兼容：处理构建产物中的普通、转义、返回语句及标识符表达式形式，
+   避免重复 `/` 或重复添加 `basePath`。
+
+这些兼容只作用于当前命中的扩展响应，不会扫描 API 响应或其他扩展资源。
+
+#### 2. JSBundle
+
+只匹配
+`{basePath}/jsbundles/{extension}/dist/{extension}/*.js` 当前目录下的直接
+JavaScript 文件；`{extension}` 必须启用且未禁用。更深层的 `.js` 文件不匹配。
 
 ```text
 `//${window.location.host}/
@@ -77,38 +98,92 @@ For each allowlisted `{extension}`, direct JavaScript files under
 `//${window.location.host}{basePath}/
 ```
 
-The remainder of each matching template-string URL is preserved, whether it contains a fixed extension name or a JavaScript interpolation. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
+固定扩展名和 JavaScript 插值形式均保留后续路径。已经带相同追加内容的模板字符串
+不会再次添加。
 
-As a narrow compatibility exception,
-`{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` also accepts an
-upstream `Content-Type` of `text/plain` without a charset, or with a supported
-UTF-8 charset. Other jsbundles and response types retain the standard text MIME
-allowlist.
+#### 3. Frontend Index JSBundle
 
-Named proxy HTML at `{basePath}/proxy/{name}/` and any path below it is rewritten
-independently of the extension allowlist. Canonical lowercase
-`href="/proxy/{name}/..."` and `src="/proxy/{name}/..."` attributes (with either
-quote style and no whitespace around `=`) receive `{basePath}`. This covers
-favicon, stylesheet, and script URLs without modifying similarly named
-attributes, other proxy roots, or absolute external URLs. Nested JavaScript
-paths continue to use the JavaScript-specific rewrite profile described below.
-Only HTML/XHTML responses use the generic HTML profile; other response content
-types, including binary assets below the same path, pass through unchanged.
+精确匹配已启用且未禁用的
+`{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js`，内容修改与
+JSBundle 相同。它额外接受 `text/plain`：可以不声明 charset；如果声明，只接受
+`utf-8` 或 `utf8`。
 
-JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
-independently of the extension allowlist. Within a selected response, the
-matching fixed `/proxy/{name}` root becomes `{basePath}/proxy/{name}`. As a
-narrow exception, Kubekey only rewrites the exact double-quoted string
-`"/proxy/kubekey"`; longer paths and other quote styles are unchanged.
+#### 4. Named Proxy HTML
 
-Kubekey JavaScript below `{basePath}/proxy/kubekey/assets/` additionally
-rewrites `/kapis/kubekey.kubesphere.io` to
-`{basePath}/kapis/kubekey.kubesphere.io`. Other KAPIS roots and JavaScript
-outside the Kubekey assets directory are unchanged by this additional rule.
+匹配 `{basePath}/proxy/{name}/` 及其任意子路径，但只在最终响应为
+`text/html` 或 `application/xhtml+xml` 时处理。HTML 属性必须同时满足：
 
-The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
+- 属性名是小写 `href` 或 `src`，不匹配 `data-src`、`xlink:href` 等名称。
+- 属性名前是 HTML ASCII 空白：空格、Tab、CR、LF 或 Form Feed。
+- `=` 两侧没有空白，属性值使用单引号或双引号。
+- 属性值以 `/proxy/{name}/` 开头；其他 name、相似前缀及绝对外部 URL 不匹配。
 
-For eligible text assets the sidecar asks the BFF for an identity response, performs the bounded literal rewrite, then lets Pingora negotiate downstream gzip, Brotli, or Zstandard compression from the browser's original `Accept-Encoding` header.
+```text
+href="/proxy/{name}/..."
+src="/proxy/{name}/..."
+        ->
+href="{basePath}/proxy/{name}/..."
+src="{basePath}/proxy/{name}/..."
+```
+
+最终响应不是 HTML/XHTML 时停止重写，正文内容不修改且不返回 502，同时保留
+Range 和条件缓存请求语义。由于候选请求已经向上游请求 identity 编码，旁路响应
+不保证保留原来的压缩表示。
+
+#### 5. Named Proxy JavaScript
+
+匹配 `{basePath}/proxy/{name}/**/*.js`，不受扩展白名单控制。
+
+- 非 Kubekey：正文中的固定 `/proxy/{name}` 根路径添加 `basePath`，包括其后
+  仍有子路径的字符串；已经紧邻相同 `basePath` 的输入不重复添加。
+- Kubekey：只替换完整双引号字符串：
+
+  ```text
+  "/proxy/kubekey"
+          ->
+  "{basePath}/proxy/kubekey"
+  ```
+
+  `"/proxy/kubekey/..."`、`'/proxy/kubekey'` 和相似前缀不匹配。这里的
+  “完整”指 JavaScript 字符串本身；在 `basePath + "/proxy/kubekey"` 表达式中，
+  后面的双引号字符串仍然会匹配。
+
+#### 6. Kubekey Assets JavaScript
+
+匹配 `{basePath}/proxy/kubekey/assets/**/*.js`，优先于普通 Named Proxy
+JavaScript，并同时执行：
+
+```text
+"/proxy/kubekey"
+        ->
+"{basePath}/proxy/kubekey"
+
+/kapis/kubekey.kubesphere.io
+        ->
+{basePath}/kapis/kubekey.kubesphere.io
+```
+
+第一条仍然只匹配完整双引号字符串；第二条匹配固定 KAPIS 根路径及其子路径。
+其他 KAPIS group 不修改。
+
+### 响应类型与缓存规则
+
+- 标准文本 Content-Type 白名单为 `text/javascript`、
+  `application/javascript`、`application/x-javascript`、`text/css`、
+  `application/json`、`text/json`、`text/html` 和
+  `application/xhtml+xml`。
+- charset 可以不声明；如果声明，只接受 `utf-8` 或 `utf8`。
+- Frontend Index JSBundle 额外接受符合上述 charset 条件的 `text/plain`。
+- Named Proxy HTML 只接受 HTML/XHTML；类型不匹配时旁路。其他已明确选中的规则
+  遇到不支持的 Content-Type 时返回 502。
+- 代理向上游请求 identity 编码；选中的响应仍带非 identity
+  `Content-Encoding` 时返回 502。
+- 成功改写会移除旧的长度、压缩、摘要、Range 和 Last-Modified 等表示元数据。
+  上游 ETag 可靠时生成包含当前规则版本的新弱 ETag；否则返回
+  `Cache-Control: no-store`。
+- 所有正文替换都有最大解码字节限制，支持任意 HTTP 分块边界，并保证对已经处理的
+  静态结果再次运行时保持幂等。
+- 正文超过 `maxDecodedBytes` 或正文不是合法 UTF-8 时，正文重写失败并返回 502。
 
 ## Configuration
 
