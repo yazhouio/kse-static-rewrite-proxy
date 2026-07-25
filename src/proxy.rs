@@ -25,7 +25,8 @@ use crate::config::EffectiveConfig;
 use crate::literal::StreamingRewritePipeline;
 use crate::metrics::Metrics;
 use crate::rewrite::{
-    REWRITE_RULE_VERSION, RewriteDecision, RewritePolicy, build_selected_response_rewriter,
+    REWRITE_RULE_VERSION, RewriteDecision, RewritePolicy, RewriteProfile,
+    build_selected_response_rewriter,
 };
 
 const COMPRESSION_LEVEL: u32 = 6;
@@ -252,15 +253,16 @@ impl ProxyHttp for KseRewriteProxy {
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         upstream_response.insert_header("x-request-id", ctx.request_id.clone())?;
-        if !matches!(ctx.decision, RewriteDecision::Rewrite { .. }) {
+        let RewriteDecision::Rewrite { profile, .. } = &ctx.decision else {
             return Ok(());
-        }
+        };
+        let profile = *profile;
 
         if upstream_response.status != StatusCode::OK {
             self.stop_rewrite(session, ctx, "upstream_status_bypass");
             return Ok(());
         }
-        if !is_rewritable_content_type(upstream_response.headers.get(CONTENT_TYPE)) {
+        if !is_rewritable_content_type(profile, upstream_response.headers.get(CONTENT_TYPE)) {
             self.stop_rewrite(session, ctx, "invalid_content_type");
             return Error::e_explain(
                 ErrorType::HTTPStatus(502),
@@ -443,23 +445,25 @@ async fn write_response(
     Ok(())
 }
 
-fn is_rewritable_content_type(value: Option<&HeaderValue>) -> bool {
+fn is_rewritable_content_type(profile: RewriteProfile, value: Option<&HeaderValue>) -> bool {
     let Some(value) = value.and_then(|header| header.to_str().ok()) else {
         return false;
     };
     let mut parts = value.split(';').map(str::trim);
     let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
-    let media_type_allowed = matches!(
-        media_type.as_str(),
-        "text/javascript"
-            | "application/javascript"
-            | "application/x-javascript"
-            | "text/css"
-            | "application/json"
-            | "text/json"
-            | "text/html"
-            | "application/xhtml+xml"
-    );
+    let media_type_allowed = (profile == RewriteProfile::FrontendIndexJsBundle
+        && media_type == "text/plain")
+        || matches!(
+            media_type.as_str(),
+            "text/javascript"
+                | "application/javascript"
+                | "application/x-javascript"
+                | "text/css"
+                | "application/json"
+                | "text/json"
+                | "text/html"
+                | "application/xhtml+xml"
+        );
     media_type_allowed
         && parts.all(|parameter| {
             let Some((name, value)) = parameter.split_once('=') else {
@@ -556,18 +560,42 @@ mod tests {
 
     #[test]
     fn content_type_allows_only_supported_utf8_text() {
-        assert!(is_rewritable_content_type(Some(&HeaderValue::from_static(
-            "application/javascript; charset=UTF-8"
-        ))));
-        assert!(is_rewritable_content_type(Some(&HeaderValue::from_static(
-            "text/css"
-        ))));
-        assert!(!is_rewritable_content_type(Some(
-            &HeaderValue::from_static("font/woff2")
-        )));
-        assert!(!is_rewritable_content_type(Some(
-            &HeaderValue::from_static("text/html; charset=gbk")
-        )));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::JsBundle,
+            Some(&HeaderValue::from_static(
+                "application/javascript; charset=UTF-8"
+            ))
+        ));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::ConsoleV3,
+            Some(&HeaderValue::from_static("text/css"))
+        ));
+        assert!(!is_rewritable_content_type(
+            RewriteProfile::ConsoleV3,
+            Some(&HeaderValue::from_static("font/woff2"))
+        ));
+        assert!(!is_rewritable_content_type(
+            RewriteProfile::ConsoleV3,
+            Some(&HeaderValue::from_static("text/html; charset=gbk"))
+        ));
+    }
+
+    #[test]
+    fn text_plain_is_allowed_only_for_frontend_index_jsbundles() {
+        let text_plain = HeaderValue::from_static("text/plain; charset=utf-8");
+
+        assert!(is_rewritable_content_type(
+            RewriteProfile::FrontendIndexJsBundle,
+            Some(&text_plain)
+        ));
+        for profile in [
+            RewriteProfile::JsBundle,
+            RewriteProfile::ConsoleV3,
+            RewriteProfile::Kubekey,
+            RewriteProfile::ProxyJs,
+        ] {
+            assert!(!is_rewritable_content_type(profile, Some(&text_plain)));
+        }
     }
 
     #[test]

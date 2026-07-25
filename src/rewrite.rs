@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v21";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v22";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
@@ -10,6 +10,7 @@ const NAMED_PROXY_ROOT: &str = "/proxy/";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
     ConsoleV3,
+    FrontendIndexJsBundle,
     JsBundle,
     Kubekey,
     ProxyJs,
@@ -136,7 +137,11 @@ impl RewritePolicy {
             && asset_path.ends_with(".js")
         {
             return RewriteDecision::Rewrite {
-                profile: RewriteProfile::JsBundle,
+                profile: if extension.ends_with("-frontend") && asset_path == "index.js" {
+                    RewriteProfile::FrontendIndexJsBundle
+                } else {
+                    RewriteProfile::JsBundle
+                },
                 extension: extension.to_owned(),
                 head_only: method.eq_ignore_ascii_case("HEAD"),
             };
@@ -173,7 +178,9 @@ impl RewritePolicy {
         match profile {
             RewriteProfile::ProxyJs => "proxy-js",
             RewriteProfile::Kubekey => "kubekey",
-            RewriteProfile::ConsoleV3 | RewriteProfile::JsBundle => match self.extensions {
+            RewriteProfile::ConsoleV3
+            | RewriteProfile::FrontendIndexJsBundle
+            | RewriteProfile::JsBundle => match self.extensions {
                 ExtensionMatcher::All => ALL_EXTENSIONS_WILDCARD,
                 ExtensionMatcher::Allowlist(_) => extension,
             },
@@ -237,11 +244,13 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::JsBundle => StreamingRewritePipeline::new_with_appended_suffix(
-            b"`//${window.location.host}/",
-            format!("{}/", base_path.trim_start_matches('/')),
-            max_bytes,
-        ),
+        RewriteProfile::FrontendIndexJsBundle | RewriteProfile::JsBundle => {
+            StreamingRewritePipeline::new_with_appended_suffix(
+                b"`//${window.location.host}/",
+                format!("{}/", base_path.trim_start_matches('/')),
+                max_bytes,
+            )
+        }
         RewriteProfile::Kubekey => StreamingRewritePipeline::new(
             [(
                 KUBEKEY_PROXY_PATH.as_bytes(),

@@ -130,7 +130,7 @@ fn rewrites_only_prefixed_text_assets_for_enabled_v3_extensions() {
 fn rewrites_only_configured_direct_javascript_bundles() {
     let policy = RewritePolicy::for_allowlisted_extensions(
         "/regions/region:shenzhen",
-        ["ks-console-embed", "observability"],
+        ["ks-console-embed", "observability", "ys1000-frontend"],
     );
 
     for method in ["GET", "HEAD"] {
@@ -147,6 +147,31 @@ fn rewrites_only_configured_direct_javascript_bundles() {
             } if extension == "observability"
         ));
     }
+
+    for method in ["GET", "HEAD"] {
+        assert!(matches!(
+            policy.decide(
+                method,
+                "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js"
+            ),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::FrontendIndexJsBundle,
+                ref extension,
+                ..
+            } if extension == "ys1000-frontend"
+        ));
+    }
+
+    assert!(matches!(
+        policy.decide(
+            "GET",
+            "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/main.js"
+        ),
+        RewriteDecision::Rewrite {
+            profile: RewriteProfile::JsBundle,
+            ..
+        }
+    ));
 
     for (method, path) in [
         (

@@ -49,6 +49,11 @@ For each allowlisted `{extension}`, direct JavaScript files under
 
 The remainder of each matching template-string URL is preserved, whether it contains a fixed extension name or a JavaScript interpolation. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
 
+As a narrow compatibility exception,
+`{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` also accepts an
+upstream `Content-Type` of `text/plain` with a supported UTF-8 charset. Other
+jsbundles and response types retain the standard text MIME allowlist.
+
 The Kubekey web installer HTML at `{basePath}/proxy/kubekey/` is also
 rewritten independently of the extension allowlist. Its fixed
 `/proxy/kubekey/` asset root becomes `{basePath}/proxy/kubekey/`. Requests for
