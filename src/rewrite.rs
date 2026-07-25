@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v25";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v26";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
@@ -14,7 +14,7 @@ pub enum RewriteProfile {
     FrontendIndexJsBundle,
     JsBundle,
     KubekeyAssetJs,
-    NamedProxyIndexHtml,
+    NamedProxyHtml,
     ProxyJs,
 }
 
@@ -107,27 +107,20 @@ impl RewritePolicy {
 
         let named_proxy_prefix = format!("{}{NAMED_PROXY_ROOT}", self.base_path);
         if let Some(proxy_path) = path.strip_prefix(&named_proxy_prefix) {
-            if let Some(name) = proxy_path.strip_suffix('/')
-                && !name.is_empty()
-                && !name.contains('/')
-            {
-                return RewriteDecision::Rewrite {
-                    profile: RewriteProfile::NamedProxyIndexHtml,
-                    extension: name.to_owned(),
-                    head_only: method.eq_ignore_ascii_case("HEAD"),
-                };
-            }
-
             if let Some((name, asset_path)) = proxy_path.split_once('/')
                 && !name.is_empty()
-                && !asset_path.is_empty()
-                && asset_path.ends_with(".js")
             {
+                let is_javascript_asset = !asset_path.is_empty() && asset_path.ends_with(".js");
                 return RewriteDecision::Rewrite {
-                    profile: if name == "kubekey" && asset_path.starts_with("assets/") {
+                    profile: if is_javascript_asset
+                        && name == "kubekey"
+                        && asset_path.starts_with("assets/")
+                    {
                         RewriteProfile::KubekeyAssetJs
-                    } else {
+                    } else if is_javascript_asset {
                         RewriteProfile::ProxyJs
+                    } else {
+                        RewriteProfile::NamedProxyHtml
                     },
                     extension: name.to_owned(),
                     head_only: method.eq_ignore_ascii_case("HEAD"),
@@ -188,7 +181,7 @@ impl RewritePolicy {
         match profile {
             RewriteProfile::ProxyJs => "proxy-js",
             RewriteProfile::KubekeyAssetJs => "kubekey-assets",
-            RewriteProfile::NamedProxyIndexHtml => "proxy-html",
+            RewriteProfile::NamedProxyHtml => "proxy-html",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
@@ -285,7 +278,7 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::NamedProxyIndexHtml => {
+        RewriteProfile::NamedProxyHtml => {
             let proxy_root = format!("{NAMED_PROXY_ROOT}{extension}/");
             let attribute_rules =
                 [" ", "\t", "\r", "\n", "\x0C"]
@@ -575,7 +568,7 @@ mod tests {
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyIndexHtml,
+                RewriteProfile::NamedProxyHtml,
                 "/regions/region:region-04",
                 "kubekey",
                 1024,
@@ -593,7 +586,7 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyIndexHtml,
+                RewriteProfile::NamedProxyHtml,
                 "/regions/region:region-04",
                 "kubekey",
                 1024,
@@ -698,7 +691,7 @@ mod tests {
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyIndexHtml,
+                RewriteProfile::NamedProxyHtml,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,
@@ -716,7 +709,7 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyIndexHtml,
+                RewriteProfile::NamedProxyHtml,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,

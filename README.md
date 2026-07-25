@@ -54,12 +54,15 @@ As a narrow compatibility exception,
 upstream `Content-Type` of `text/plain` with a supported UTF-8 charset. Other
 jsbundles and response types retain the standard text MIME allowlist.
 
-Named proxy index HTML at `{basePath}/proxy/{name}/` is rewritten independently
-of the extension allowlist. Canonical lowercase `href="/proxy/{name}/..."` and
-`src="/proxy/{name}/..."` attributes (with either quote style and no whitespace
-around `=`) receive `{basePath}`. This covers favicon, stylesheet, and script
-URLs without modifying similarly named attributes, other proxy roots, or
-absolute external URLs.
+Named proxy HTML at `{basePath}/proxy/{name}/` and any path below it is rewritten
+independently of the extension allowlist. Canonical lowercase
+`href="/proxy/{name}/..."` and `src="/proxy/{name}/..."` attributes (with either
+quote style and no whitespace around `=`) receive `{basePath}`. This covers
+favicon, stylesheet, and script URLs without modifying similarly named
+attributes, other proxy roots, or absolute external URLs. Nested JavaScript
+paths continue to use the JavaScript-specific rewrite profile described below.
+Only HTML/XHTML responses use the generic HTML profile; other response content
+types, including binary assets below the same path, pass through unchanged.
 
 JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
 independently of the extension allowlist. Within a selected response, the

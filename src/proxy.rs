@@ -236,12 +236,14 @@ impl ProxyHttp for KseRewriteProxy {
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         upstream_request.insert_header("x-request-id", ctx.request_id.clone())?;
-        if matches!(ctx.decision, RewriteDecision::Rewrite { .. }) {
+        if let RewriteDecision::Rewrite { profile, .. } = ctx.decision {
             upstream_request.insert_header(ACCEPT_ENCODING, "identity")?;
-            upstream_request.remove_header(&IF_NONE_MATCH);
-            upstream_request.remove_header(&IF_MODIFIED_SINCE);
-            upstream_request.remove_header(&RANGE);
-            upstream_request.remove_header(&IF_RANGE);
+            if should_force_unconditional_full_response(profile) {
+                upstream_request.remove_header(&IF_NONE_MATCH);
+                upstream_request.remove_header(&IF_MODIFIED_SINCE);
+                upstream_request.remove_header(&RANGE);
+                upstream_request.remove_header(&IF_RANGE);
+            }
         }
         Ok(())
     }
@@ -264,6 +266,9 @@ impl ProxyHttp for KseRewriteProxy {
         }
         if !is_rewritable_content_type(profile, upstream_response.headers.get(CONTENT_TYPE)) {
             self.stop_rewrite(session, ctx, "invalid_content_type");
+            if selects_html_by_response_content_type(profile) {
+                return Ok(());
+            }
             return Error::e_explain(
                 ErrorType::HTTPStatus(502),
                 "target rewrite response has a non-text Content-Type",
@@ -453,17 +458,21 @@ fn is_rewritable_content_type(profile: RewriteProfile, value: Option<&HeaderValu
     let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
     let media_type_allowed = (profile == RewriteProfile::FrontendIndexJsBundle
         && media_type == "text/plain")
-        || matches!(
-            media_type.as_str(),
-            "text/javascript"
-                | "application/javascript"
-                | "application/x-javascript"
-                | "text/css"
-                | "application/json"
-                | "text/json"
-                | "text/html"
-                | "application/xhtml+xml"
-        );
+        || if selects_html_by_response_content_type(profile) {
+            matches!(media_type.as_str(), "text/html" | "application/xhtml+xml")
+        } else {
+            matches!(
+                media_type.as_str(),
+                "text/javascript"
+                    | "application/javascript"
+                    | "application/x-javascript"
+                    | "text/css"
+                    | "application/json"
+                    | "text/json"
+                    | "text/html"
+                    | "application/xhtml+xml"
+            )
+        };
     media_type_allowed
         && parts.all(|parameter| {
             let Some((name, value)) = parameter.split_once('=') else {
@@ -475,6 +484,14 @@ fn is_rewritable_content_type(profile: RewriteProfile, value: Option<&HeaderValu
                     "utf-8" | "utf8"
                 )
         })
+}
+
+fn should_force_unconditional_full_response(profile: RewriteProfile) -> bool {
+    !selects_html_by_response_content_type(profile)
+}
+
+fn selects_html_by_response_content_type(profile: RewriteProfile) -> bool {
+    profile == RewriteProfile::NamedProxyHtml
 }
 
 fn is_identity_encoding(value: Option<&HeaderValue>) -> bool {
@@ -578,6 +595,22 @@ mod tests {
             RewriteProfile::ConsoleV3,
             Some(&HeaderValue::from_static("text/html; charset=gbk"))
         ));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::NamedProxyHtml,
+            Some(&HeaderValue::from_static("text/html; charset=utf-8"))
+        ));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::NamedProxyHtml,
+            Some(&HeaderValue::from_static("application/xhtml+xml"))
+        ));
+        assert!(!is_rewritable_content_type(
+            RewriteProfile::NamedProxyHtml,
+            Some(&HeaderValue::from_static("text/css"))
+        ));
+        assert!(!is_rewritable_content_type(
+            RewriteProfile::NamedProxyHtml,
+            Some(&HeaderValue::from_static("image/png"))
+        ));
     }
 
     #[test]
@@ -592,10 +625,26 @@ mod tests {
             RewriteProfile::JsBundle,
             RewriteProfile::ConsoleV3,
             RewriteProfile::KubekeyAssetJs,
-            RewriteProfile::NamedProxyIndexHtml,
+            RewriteProfile::NamedProxyHtml,
             RewriteProfile::ProxyJs,
         ] {
             assert!(!is_rewritable_content_type(profile, Some(&text_plain)));
+        }
+    }
+
+    #[test]
+    fn preserves_request_semantics_for_content_type_selected_html() {
+        assert!(!should_force_unconditional_full_response(
+            RewriteProfile::NamedProxyHtml
+        ));
+        for profile in [
+            RewriteProfile::ConsoleV3,
+            RewriteProfile::FrontendIndexJsBundle,
+            RewriteProfile::JsBundle,
+            RewriteProfile::KubekeyAssetJs,
+            RewriteProfile::ProxyJs,
+        ] {
+            assert!(should_force_unconditional_full_response(profile));
         }
     }
 

@@ -1,25 +1,25 @@
 use kse_static_rewrite_proxy::rewrite::{RewriteDecision, RewritePolicy, RewriteProfile};
 
 #[test]
-fn rewrites_named_proxy_index_html_paths() {
+fn rewrites_html_at_and_below_named_proxy_paths() {
     let policy = RewritePolicy::for_allowlisted_extensions(
         "/regions/region:region-04",
         std::iter::empty::<&str>(),
     );
 
-    for (method, name) in [
-        ("GET", "kubekey"),
-        ("HEAD", "kubekey"),
-        ("GET", "ys1000"),
-        ("HEAD", "ys1000"),
-        ("GET", "another-app"),
-        ("GET", "app:name"),
+    for (method, name, nested_path) in [
+        ("GET", "kubekey", ""),
+        ("HEAD", "kubekey", ""),
+        ("GET", "ys1000", ""),
+        ("HEAD", "ys1000", "pages/login"),
+        ("GET", "another-app", "xxx/xx/xx"),
+        ("GET", "app:name", "nested/"),
     ] {
-        let path = format!("/regions/region:region-04/proxy/{name}/");
+        let path = format!("/regions/region:region-04/proxy/{name}/{nested_path}");
         assert!(matches!(
             policy.decide(method, &path),
             RewriteDecision::Rewrite {
-                profile: RewriteProfile::NamedProxyIndexHtml,
+                profile: RewriteProfile::NamedProxyHtml,
                 ref extension,
                 head_only,
             } if extension == name && head_only == method.eq_ignore_ascii_case("HEAD")
@@ -42,7 +42,10 @@ fn rewrites_named_proxy_index_html_paths() {
         ("POST", "/regions/region:region-04/proxy/kubekey/"),
         ("POST", "/regions/region:region-04/proxy/ys1000/"),
         ("GET", "/regions/region:region-04/proxy//"),
-        ("GET", "/regions/region:region-04/proxy/another-app/nested/"),
+        (
+            "GET",
+            "/regions/region:region-04/proxy/name-without-trailing-slash",
+        ),
     ] {
         assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
     }
@@ -101,11 +104,19 @@ fn rewrites_javascript_below_named_proxy_paths() {
         ));
     }
 
-    for (method, path) in [
-        (
+    assert!(matches!(
+        policy.decide(
             "GET",
-            "/regions/region:region-04/proxy/kubekey/assets/index.css",
+            "/regions/region:region-04/proxy/kubekey/assets/index.css"
         ),
+        RewriteDecision::Rewrite {
+            profile: RewriteProfile::NamedProxyHtml,
+            ref extension,
+            head_only: false,
+        } if extension == "kubekey"
+    ));
+
+    for (method, path) in [
         ("GET", "/proxy/kubekey/assets/index.js"),
         (
             "POST",
@@ -353,7 +364,7 @@ fn named_proxy_metrics_use_a_bounded_profile_label() {
         "proxy-js"
     );
     assert_eq!(
-        policy.metrics_extension_label(RewriteProfile::NamedProxyIndexHtml, "arbitrary:name"),
+        policy.metrics_extension_label(RewriteProfile::NamedProxyHtml, "arbitrary:name"),
         "proxy-html"
     );
 }
