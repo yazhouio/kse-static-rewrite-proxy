@@ -6,11 +6,48 @@ use serde_json::Value;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v31";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v32";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum RewriteRule {
+    ConsoleV3 = 1,
+    JsBundle = 2,
+    FrontendIndexJsBundle = 3,
+    NamedProxyHtml = 4,
+    Ys1000Html = 5,
+    KubekeyAssetJs = 6,
+}
+
+impl RewriteRule {
+    pub const ALL: [Self; 6] = [
+        Self::ConsoleV3,
+        Self::JsBundle,
+        Self::FrontendIndexJsBundle,
+        Self::NamedProxyHtml,
+        Self::Ys1000Html,
+        Self::KubekeyAssetJs,
+    ];
+
+    pub const fn number(self) -> u8 {
+        self as u8
+    }
+}
+
+impl TryFrom<u8> for RewriteRule {
+    type Error = u8;
+
+    fn try_from(number: u8) -> Result<Self, Self::Error> {
+        Self::ALL
+            .into_iter()
+            .find(|rule| rule.number() == number)
+            .ok_or(number)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
@@ -37,6 +74,7 @@ pub struct RewritePolicy {
     base_path: String,
     extensions: ExtensionMatcher,
     disabled_extensions: HashSet<String>,
+    enabled_rules: HashSet<RewriteRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +107,27 @@ impl RewritePolicy {
         DI: IntoIterator<Item = DS>,
         DS: AsRef<str>,
     {
+        Self::new_with_rules(
+            base_path,
+            enabled_extensions,
+            disabled_extensions,
+            RewriteRule::ALL,
+        )
+    }
+
+    pub fn new_with_rules<EI, ES, DI, DS, RI>(
+        base_path: impl Into<String>,
+        enabled_extensions: EI,
+        disabled_extensions: DI,
+        enabled_rules: RI,
+    ) -> Self
+    where
+        EI: IntoIterator<Item = ES>,
+        ES: AsRef<str>,
+        DI: IntoIterator<Item = DS>,
+        DS: AsRef<str>,
+        RI: IntoIterator<Item = RewriteRule>,
+    {
         let enabled_extensions: HashSet<String> = enabled_extensions
             .into_iter()
             .map(|extension| extension.as_ref().to_string())
@@ -84,7 +143,12 @@ impl RewritePolicy {
             .into_iter()
             .map(|extension| extension.as_ref().to_string())
             .collect();
-        Self::from_matcher(base_path, extensions, disabled_extensions)
+        Self::from_matcher(
+            base_path,
+            extensions,
+            disabled_extensions,
+            enabled_rules.into_iter().collect(),
+        )
     }
 
     pub fn for_all_extensions(base_path: impl Into<String>) -> Self {
@@ -114,29 +178,29 @@ impl RewritePolicy {
             if let Some((name, asset_path)) = proxy_path.split_once('/')
                 && !name.is_empty()
             {
-                if name == "ys1000" {
-                    return RewriteDecision::Rewrite {
-                        profile: RewriteProfile::Ys1000Html,
+                let profile = if name == "ys1000" {
+                    self.is_rule_enabled(RewriteRule::Ys1000Html)
+                        .then_some(RewriteProfile::Ys1000Html)
+                        .or_else(|| {
+                            self.is_rule_enabled(RewriteRule::NamedProxyHtml)
+                                .then_some(RewriteProfile::NamedProxyHtml)
+                        })
+                } else if !asset_path.is_empty() && asset_path.ends_with(".js") {
+                    (name == KUBEKEY_NAME
+                        && asset_path.starts_with("assets/")
+                        && self.is_rule_enabled(RewriteRule::KubekeyAssetJs))
+                    .then_some(RewriteProfile::KubekeyAssetJs)
+                } else {
+                    self.is_rule_enabled(RewriteRule::NamedProxyHtml)
+                        .then_some(RewriteProfile::NamedProxyHtml)
+                };
+                return profile.map_or(RewriteDecision::Bypass, |profile| {
+                    RewriteDecision::Rewrite {
+                        profile,
                         extension: name.to_owned(),
                         head_only: method.eq_ignore_ascii_case("HEAD"),
-                    };
-                }
-                if !asset_path.is_empty() && asset_path.ends_with(".js") {
-                    return if name == KUBEKEY_NAME && asset_path.starts_with("assets/") {
-                        RewriteDecision::Rewrite {
-                            profile: RewriteProfile::KubekeyAssetJs,
-                            extension: name.to_owned(),
-                            head_only: method.eq_ignore_ascii_case("HEAD"),
-                        }
-                    } else {
-                        RewriteDecision::Bypass
-                    };
-                }
-                return RewriteDecision::Rewrite {
-                    profile: RewriteProfile::NamedProxyHtml,
-                    extension: name.to_owned(),
-                    head_only: method.eq_ignore_ascii_case("HEAD"),
-                };
+                    }
+                });
             }
         }
 
@@ -149,15 +213,22 @@ impl RewritePolicy {
             && !asset_path.contains('/')
             && asset_path.ends_with(".js")
         {
-            return RewriteDecision::Rewrite {
-                profile: if extension.ends_with("-frontend") && asset_path == "index.js" {
-                    RewriteProfile::FrontendIndexJsBundle
+            let is_frontend_index = extension.ends_with("-frontend") && asset_path == "index.js";
+            let profile =
+                if is_frontend_index && self.is_rule_enabled(RewriteRule::FrontendIndexJsBundle) {
+                    Some(RewriteProfile::FrontendIndexJsBundle)
+                } else if self.is_rule_enabled(RewriteRule::JsBundle) {
+                    Some(RewriteProfile::JsBundle)
                 } else {
-                    RewriteProfile::JsBundle
-                },
-                extension: extension.to_owned(),
-                head_only: method.eq_ignore_ascii_case("HEAD"),
-            };
+                    None
+                };
+            if let Some(profile) = profile {
+                return RewriteDecision::Rewrite {
+                    profile,
+                    extension: extension.to_owned(),
+                    head_only: method.eq_ignore_ascii_case("HEAD"),
+                };
+            }
         }
 
         let static_prefix = format!("{}/extensions-static/", self.base_path);
@@ -170,6 +241,7 @@ impl RewritePolicy {
         if extension.is_empty()
             || asset_path.is_empty()
             || extension.contains('/')
+            || !self.is_rule_enabled(RewriteRule::ConsoleV3)
             || !self.is_extension_enabled(extension)
             || !is_text_asset(asset_path)
         {
@@ -212,15 +284,21 @@ impl RewritePolicy {
             }
     }
 
+    fn is_rule_enabled(&self, rule: RewriteRule) -> bool {
+        self.enabled_rules.contains(&rule)
+    }
+
     fn from_matcher(
         base_path: impl Into<String>,
         extensions: ExtensionMatcher,
         disabled_extensions: HashSet<String>,
+        enabled_rules: HashSet<RewriteRule>,
     ) -> Self {
         Self {
             base_path: base_path.into().trim_end_matches('/').to_string(),
             extensions,
             disabled_extensions,
+            enabled_rules,
         }
     }
 }

@@ -34,6 +34,28 @@ rewriteSidecar:
 }
 
 #[test]
+fn rejects_rewrite_rule_numbers_not_documented_in_readme() {
+    for number in [0, 7] {
+        let yaml = format!(
+            r#"
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    rules:
+      {number}: false
+"#
+        );
+        let error = EffectiveConfig::from_yaml(&yaml).expect_err("unknown rule must fail");
+        assert_eq!(
+            error.to_string(),
+            format!("rewriteSidecar.rewrite.rules contains unknown rule number: {number}")
+        );
+    }
+}
+
+#[test]
 fn accepts_all_extensions_wildcard() {
     let config = EffectiveConfig::from_yaml(
         r#"

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 
 use percent_encoding::percent_decode_str;
@@ -6,7 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::rewrite::{ALL_EXTENSIONS_WILDCARD, RewritePolicy, is_safe_extension_name};
+use crate::rewrite::{ALL_EXTENSIONS_WILDCARD, RewritePolicy, RewriteRule, is_safe_extension_name};
 
 const MAX_BASE_PATH_LENGTH: usize = 1024;
 const DEFAULT_MAX_DECODED_BYTES: usize = 20 * 1024 * 1024;
@@ -21,6 +21,7 @@ pub struct EffectiveConfig {
     upstream: SocketAddr,
     enabled_extensions: Vec<String>,
     disabled_extensions: Vec<String>,
+    enabled_rules: HashSet<RewriteRule>,
     max_decoded_bytes: usize,
     max_concurrent: usize,
     max_queued: usize,
@@ -54,6 +55,8 @@ pub enum ConfigError {
         field: &'static str,
         extension: String,
     },
+    #[error("rewriteSidecar.rewrite.rules contains unknown rule number: {0}")]
+    UnknownRule(u8),
     #[error("rewriteSidecar.rewrite.{0} must be greater than zero")]
     NonPositiveLimit(&'static str),
 }
@@ -90,6 +93,7 @@ struct RawRewriteConfig {
     enabled_extensions: Vec<String>,
     #[serde(rename = "disabledExtensions")]
     disabled_extensions: Vec<String>,
+    rules: HashMap<u8, bool>,
     #[serde(rename = "maxDecodedBytes")]
     max_decoded_bytes: usize,
     #[serde(rename = "maxConcurrent")]
@@ -103,6 +107,7 @@ impl Default for RawRewriteConfig {
         Self {
             enabled_extensions: Vec::new(),
             disabled_extensions: Vec::new(),
+            rules: HashMap::new(),
             max_decoded_bytes: DEFAULT_MAX_DECODED_BYTES,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             max_queued: DEFAULT_MAX_QUEUED,
@@ -155,6 +160,15 @@ impl EffectiveConfig {
             validate_explicit_extensions("enabledExtensions", &rewrite.enabled_extensions)?;
         }
         validate_explicit_extensions("disabledExtensions", &rewrite.disabled_extensions)?;
+        let mut enabled_rules = RewriteRule::ALL.into_iter().collect::<HashSet<_>>();
+        for (number, enabled) in rewrite.rules {
+            let rule = RewriteRule::try_from(number).map_err(ConfigError::UnknownRule)?;
+            if enabled {
+                enabled_rules.insert(rule);
+            } else {
+                enabled_rules.remove(&rule);
+            }
+        }
 
         Ok(Self {
             base_path,
@@ -163,6 +177,7 @@ impl EffectiveConfig {
             upstream,
             enabled_extensions: rewrite.enabled_extensions,
             disabled_extensions: rewrite.disabled_extensions,
+            enabled_rules,
             max_decoded_bytes: rewrite.max_decoded_bytes,
             max_concurrent: rewrite.max_concurrent,
             max_queued: rewrite.max_queued,
@@ -194,10 +209,11 @@ impl EffectiveConfig {
     }
 
     pub(crate) fn rewrite_policy(&self) -> RewritePolicy {
-        RewritePolicy::new_with_disabled_extensions(
+        RewritePolicy::new_with_rules(
             &self.base_path,
             &self.enabled_extensions,
             &self.disabled_extensions,
+            self.enabled_rules.iter().copied(),
         )
     }
 
@@ -377,4 +393,63 @@ fn decode_repeatedly(value: &str) -> Result<String, ConfigError> {
         decoded = next;
     }
     Ok(decoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rewrite::{RewriteDecision, RewriteProfile};
+
+    use super::*;
+
+    #[test]
+    fn rule_switches_default_on_and_flow_into_the_effective_policy() {
+        let default_config = EffectiveConfig::from_yaml(
+            r#"
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+"#,
+        )
+        .expect("rules default on");
+        assert_eq!(
+            default_config.enabled_rules,
+            RewriteRule::ALL.into_iter().collect()
+        );
+
+        let configured = EffectiveConfig::from_yaml(
+            r#"
+client:
+  basePath: /regions/region:shenzhen
+rewriteSidecar:
+  listen: 0.0.0.0:8080
+  adminListen: 0.0.0.0:9090
+  upstream: http://127.0.0.1:8000
+  rewrite:
+    rules:
+      2: false
+      5: false
+"#,
+        )
+        .expect("valid rule switches");
+        assert!(!configured.enabled_rules.contains(&RewriteRule::JsBundle));
+        assert!(!configured.enabled_rules.contains(&RewriteRule::Ys1000Html));
+        assert_eq!(configured.enabled_rules.len(), RewriteRule::ALL.len() - 2);
+
+        let policy = configured.rewrite_policy();
+        assert_eq!(
+            policy.decide(
+                "GET",
+                "/regions/region:shenzhen/jsbundles/observability/dist/observability/main.js"
+            ),
+            RewriteDecision::Bypass
+        );
+        assert!(matches!(
+            policy.decide("GET", "/regions/region:shenzhen/proxy/ys1000/pages/login"),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::NamedProxyHtml,
+                ..
+            }
+        ));
+    }
 }

@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### 当前重写规则统计（v31）
+### 当前重写规则统计（v32）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -217,6 +217,9 @@ rewriteSidecar:
   adminListen: 0.0.0.0:9090
   upstream: http://127.0.0.1:8000
   rewrite:
+    rules:
+      1: true
+      5: false
     enabledExtensions:
       - ks-console-embed
       - kubeeye
@@ -229,9 +232,19 @@ rewriteSidecar:
 
 `client.basePath` is treated as an opaque, validated URL path. The sidecar does not extract a region name from it. `rewriteSidecar.upstream` is restricted to an explicit loopback HTTP address.
 
+`rules` uses the numeric rule IDs in the table above. Every rule defaults to
+`true`, including entries omitted from the map and configurations that omit
+`rules` entirely. Set a rule to `false` to disable it or `true` to enable it.
+Only IDs `1` through `6` are accepted.
+
+Rules 2/3 and 4/5 overlap intentionally. If rule 3 is disabled while rule 2 is
+enabled, Frontend Index JSBundle requests fall back to rule 2 without its
+`text/plain` compatibility. If rule 5 is disabled while rule 4 is enabled,
+ys1000 HTML falls back to the generic Named Proxy HTML rewrite.
+
 `enabledExtensions` has three modes:
 
-- `[]` disables rewriting.
+- `[]` disables the extension-controlled rules 1–3.
 - A list of extension names enables only those extensions.
 - `["*"]` enables every extension whose name matches
   `[A-Za-z0-9][A-Za-z0-9._-]{0,127}`.
@@ -288,7 +301,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v31","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v32","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.

@@ -1,4 +1,87 @@
-use kse_static_rewrite_proxy::rewrite::{RewriteDecision, RewritePolicy, RewriteProfile};
+use kse_static_rewrite_proxy::rewrite::{
+    RewriteDecision, RewritePolicy, RewriteProfile, RewriteRule,
+};
+
+#[test]
+fn enables_each_numbered_rule_independently() {
+    let cases = [
+        (
+            RewriteRule::ConsoleV3,
+            "/regions/region:shenzhen/extensions-static/kubeeye/dist/v3dist/main.js",
+            RewriteProfile::ConsoleV3,
+        ),
+        (
+            RewriteRule::JsBundle,
+            "/regions/region:shenzhen/jsbundles/observability/dist/observability/main.js",
+            RewriteProfile::JsBundle,
+        ),
+        (
+            RewriteRule::FrontendIndexJsBundle,
+            "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js",
+            RewriteProfile::FrontendIndexJsBundle,
+        ),
+        (
+            RewriteRule::NamedProxyHtml,
+            "/regions/region:shenzhen/proxy/another-app/pages/login",
+            RewriteProfile::NamedProxyHtml,
+        ),
+        (
+            RewriteRule::Ys1000Html,
+            "/regions/region:shenzhen/proxy/ys1000/pages/login",
+            RewriteProfile::Ys1000Html,
+        ),
+        (
+            RewriteRule::KubekeyAssetJs,
+            "/regions/region:shenzhen/proxy/kubekey/assets/index.js",
+            RewriteProfile::KubekeyAssetJs,
+        ),
+    ];
+
+    for (rule, path, expected_profile) in cases {
+        let policy = RewritePolicy::new_with_rules(
+            "/regions/region:shenzhen",
+            ["*"],
+            std::iter::empty::<&str>(),
+            [rule],
+        );
+        assert!(
+            matches!(
+                policy.decide("GET", path),
+                RewriteDecision::Rewrite { profile, .. } if profile == expected_profile
+            ),
+            "rule {} should independently select its README path",
+            rule.number()
+        );
+    }
+}
+
+#[test]
+fn disabled_specialized_rules_fall_back_to_enabled_general_rules() {
+    let policy = RewritePolicy::new_with_rules(
+        "/regions/region:shenzhen",
+        ["*"],
+        std::iter::empty::<&str>(),
+        [RewriteRule::JsBundle, RewriteRule::NamedProxyHtml],
+    );
+
+    assert!(matches!(
+        policy.decide(
+            "GET",
+            "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js"
+        ),
+        RewriteDecision::Rewrite {
+            profile: RewriteProfile::JsBundle,
+            ..
+        }
+    ));
+    assert!(matches!(
+        policy.decide("GET", "/regions/region:shenzhen/proxy/ys1000/pages/login"),
+        RewriteDecision::Rewrite {
+            profile: RewriteProfile::NamedProxyHtml,
+            ..
+        }
+    ));
+}
 
 #[test]
 fn rewrites_html_at_and_below_named_proxy_paths() {
