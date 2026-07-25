@@ -1,6 +1,39 @@
 use kse_static_rewrite_proxy::rewrite::{RewriteDecision, RewritePolicy, RewriteProfile};
 
 #[test]
+fn rewrites_the_fixed_kubekey_installer_html_path() {
+    let policy = RewritePolicy::for_allowlisted_extensions(
+        "/regions/region:region-04",
+        std::iter::empty::<&str>(),
+    );
+
+    for method in ["GET", "HEAD"] {
+        assert!(matches!(
+            policy.decide(
+                method,
+                "/regions/region:region-04/proxy/kubekey/"
+            ),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::Kubekey,
+                ref extension,
+                head_only,
+            } if extension == "kubekey" && head_only == method.eq_ignore_ascii_case("HEAD")
+        ));
+    }
+
+    for (method, path) in [
+        ("GET", "/proxy/kubekey/"),
+        (
+            "GET",
+            "/regions/region:region-04/proxy/kubekey/assets/index.js",
+        ),
+        ("POST", "/regions/region:region-04/proxy/kubekey/"),
+    ] {
+        assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
+    }
+}
+
+#[test]
 fn rewrites_only_prefixed_text_assets_for_enabled_v3_extensions() {
     let policy =
         RewritePolicy::for_allowlisted_extensions("/regions/region:shenzhen", ["ks-console-embed"]);

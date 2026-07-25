@@ -49,6 +49,11 @@ For each allowlisted `{extension}`, direct JavaScript files under
 
 The remainder of each matching template-string URL is preserved, whether it contains a fixed extension name or a JavaScript interpolation. This rule does not apply to nested JavaScript files, unlisted jsbundles, or non-JavaScript assets.
 
+The Kubekey web installer HTML at `{basePath}/proxy/kubekey/` is also
+rewritten independently of the extension allowlist. Its fixed
+`/proxy/kubekey/` asset root becomes `{basePath}/proxy/kubekey/`. Requests for
+the resulting JS, CSS, favicon, and other assets bypass response rewriting.
+
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
 For eligible text assets the sidecar asks the BFF for an identity response, performs the bounded literal rewrite, then lets Pingora negotiate downstream gzip, Brotli, or Zstandard compression from the browser's original `Accept-Encoding` header.

@@ -2,13 +2,15 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v19";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v20";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
+const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
     ConsoleV3,
     JsBundle,
+    Kubekey,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,14 @@ impl RewritePolicy {
             || (!method.eq_ignore_ascii_case("GET") && !method.eq_ignore_ascii_case("HEAD"))
         {
             return RewriteDecision::Bypass;
+        }
+
+        if path == format!("{}{KUBEKEY_PROXY_PATH}", self.base_path) {
+            return RewriteDecision::Rewrite {
+                profile: RewriteProfile::Kubekey,
+                extension: "kubekey".to_owned(),
+                head_only: method.eq_ignore_ascii_case("HEAD"),
+            };
         }
 
         let jsbundle_prefix = format!("{}/jsbundles/", self.base_path);
@@ -206,6 +216,13 @@ pub(crate) fn build_selected_response_rewriter(
         RewriteProfile::JsBundle => StreamingRewritePipeline::new_with_appended_suffix(
             b"`//${window.location.host}/",
             format!("{}/", base_path.trim_start_matches('/')),
+            max_bytes,
+        ),
+        RewriteProfile::Kubekey => StreamingRewritePipeline::new(
+            [(
+                KUBEKEY_PROXY_PATH.as_bytes(),
+                format!("{base_path}{KUBEKEY_PROXY_PATH}").into_bytes(),
+            )],
             max_bytes,
         ),
     }
@@ -467,6 +484,47 @@ mod tests {
                 idempotent_output,
                 expected.as_bytes(),
                 "second pass split at byte {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn kubekey_rewriter_prefixes_asset_urls_across_chunk_boundaries_idempotently() {
+        let input = r#"<!doctype html><link rel="icon" href="/proxy/kubekey/favicon.svg"><script src="/proxy/kubekey/assets/index.js"></script><link href="/proxy/kubekey/assets/index.css"><a href="/other">other</a>"#;
+        let expected = r#"<!doctype html><link rel="icon" href="/regions/region:region-04/proxy/kubekey/favicon.svg"><script src="/regions/region:region-04/proxy/kubekey/assets/index.js"></script><link href="/regions/region:region-04/proxy/kubekey/assets/index.css"><a href="/other">other</a>"#;
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::Kubekey,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::Kubekey,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
             );
         }
     }
