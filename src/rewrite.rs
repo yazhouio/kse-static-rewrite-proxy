@@ -2,9 +2,8 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v29";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v30";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
-const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
@@ -269,18 +268,11 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::KubekeyAssetJs => {
-            let kapis_source = KUBEKEY_KAPIS_PATH.as_bytes().to_vec();
-            let kapis_replacement = [base_path.as_bytes(), kapis_source.as_slice()].concat();
-            StreamingRewritePipeline::new_with_exact(
-                [(kapis_source, kapis_replacement)],
-                [
-                    kubekey_proxy_exact_rule(base_path),
-                    kubekey_legacy_root_rule(base_path),
-                ],
-                max_bytes,
-            )
-        }
+        RewriteProfile::KubekeyAssetJs => StreamingRewritePipeline::new_with_exact(
+            std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
+            [kubekey_legacy_root_rule(base_path)],
+            max_bytes,
+        ),
         RewriteProfile::ProxyJs => {
             let source = format!("{NAMED_PROXY_ROOT}{extension}");
             if extension == KUBEKEY_NAME {
@@ -699,9 +691,9 @@ mod tests {
     }
 
     #[test]
-    fn kubekey_asset_js_rewriter_prefixes_proxy_and_kapis_roots_idempotently() {
+    fn kubekey_asset_js_rewriter_only_replaces_legacy_root_idempotently() {
         let input = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const endpoint="/57516e69-2cb0-4d48-a8a8-2833cfff87a9/api";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/regions/region:region-04";const endpoint="/regions/region:region-04/api";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let expected = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/regions/region:region-04";const endpoint="/regions/region:region-04/api";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(

@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### 当前重写规则统计（v29）
+### 当前重写规则统计（v30）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -33,7 +33,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 | 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` 或 `.../dist/{name}/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址；Kubekey HTML 还会将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
 | 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 通常将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}`；Kubekey 仅替换完整的双引号字符串 `"/proxy/kubekey"` |
-| 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 将完整的双引号字符串 `"/proxy/kubekey"` 和固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为对应的 `basePath` 地址，并将 `/kapis/kubekey.kubesphere.io` 添加 `basePath`；更长的 `/proxy/kubekey/...` 字符串不匹配 |
+| 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 仅将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
 
 公共行为：
 
@@ -173,24 +173,17 @@ Range 和条件缓存请求语义。由于候选请求已经向上游请求 iden
 #### 6. Kubekey Assets JavaScript
 
 匹配 `{basePath}/proxy/kubekey/assets/**/*.js`，优先于普通 Named Proxy
-JavaScript，并同时执行：
+JavaScript，并且只执行：
 
 ```text
-"/proxy/kubekey"
-        ->
-"{basePath}/proxy/kubekey"
-
-/kapis/kubekey.kubesphere.io
-        ->
-{basePath}/kapis/kubekey.kubesphere.io
-
 /57516e69-2cb0-4d48-a8a8-2833cfff87a9
         ->
 {basePath}
 ```
 
-第一条仍然只匹配完整双引号字符串；第二条匹配固定 KAPIS 根路径及其子路径。
-第三条匹配固定旧根路径，其后的子路径保持不变。其他 KAPIS group 不修改。
+固定旧根路径之后的子路径保持不变。规则 6 不修改 `"/proxy/kubekey"` 或
+`/kapis/kubekey.kubesphere.io`；由于它优先于普通 Named Proxy JavaScript，
+assets 目录下的 JavaScript 也不会继承规则 5 对 `"/proxy/kubekey"` 的替换。
 
 ### 响应类型与缓存规则
 
@@ -295,7 +288,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v29","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v30","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.
