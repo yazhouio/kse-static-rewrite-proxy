@@ -21,7 +21,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### Rewrite rule summary (v32)
+### Rewrite rule summary (v33)
 
 There are **3 top-level request path roots and 6 response rewrite rules**. The
 request roots are `extensions-static`, `jsbundles`, and `proxy`. Response rules
@@ -35,7 +35,7 @@ separately.
 | 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` | Enabled and not disabled extension; `distribution` equals `extension`, or equals `{name}` when the outer extension is `{name}-frontend`; only direct `.js` files | Replace `` `//${window.location.host}/ `` with `` `//${window.location.host}{basePath}/ `` |
 | 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` or `.../dist/{name}/index.js` | Enabled and not disabled extension; additionally accepts `text/plain` with no charset or UTF-8/UTF8 charset | Same content rewrite as JSBundle; separate rule for Content-Type compatibility |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` and any descendant path | Only `text/html` or `application/xhtml+xml`; other types bypass unchanged | Prefix lowercase, tightly formatted `href="/proxy/{name}/..."` and `src="/proxy/{name}/..."` attributes with `basePath`; Kubekey HTML also replaces the fixed legacy root `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` with `basePath` |
-| 5 | Ys1000 MIG Meta HTML | `{basePath}/proxy/ys1000/` and any descendant path | Only `text/html` or `application/xhtml+xml`; other types bypass unchanged | Base64-decode the JSON in `window._mig_meta`, change top-level `baseURI` from `/proxy/ys1000` to `{basePath}/proxy/ys1000/`, re-encode it in place, and include rule 4's HTML attribute rewrites |
+| 5 | Ys1000 MIG Meta HTML | `{basePath}/proxy/ys1000/` and any descendant path | Only `text/html` or `application/xhtml+xml`; other types bypass unchanged | Base64-decode the JSON in `window._mig_meta`, change top-level `baseURI` from `/proxy/ys1000` to `{basePath}/proxy/ys1000`, re-encode it in place, and include rule 4's HTML attribute rewrites |
 | 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | Supported UTF-8 text type; not controlled by the extension allowlist | Replace only the fixed legacy root `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` with `basePath` |
 
 Common behavior:
@@ -185,7 +185,7 @@ The value is decoded using standard Base64. If the result is JSON and its
 top-level `baseURI` is exactly `/proxy/ys1000`, it is changed to:
 
 ```text
-{basePath}/proxy/ys1000/
+{basePath}/proxy/ys1000
 ```
 
 The modified JSON is standard-Base64 encoded and placed back in the original
@@ -327,7 +327,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v32","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v33","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.

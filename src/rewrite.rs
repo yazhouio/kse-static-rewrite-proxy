@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v32";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v33";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
@@ -385,7 +385,7 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )?;
             if profile == RewriteProfile::Ys1000Html {
-                let desired_base_uri = format!("{base_path}{NAMED_PROXY_ROOT}{extension}/");
+                let desired_base_uri = format!("{base_path}{NAMED_PROXY_ROOT}{extension}");
                 Ok(pipeline.with_buffered_transform(move |input| {
                     rewrite_mig_meta_base_uri(input, &desired_base_uri)
                 }))
@@ -861,7 +861,7 @@ mod tests {
         let input = format!(
             "<html><script type=\"text/javascript\">\n  window._mig_meta = '{encoded}';\n</script></html>"
         );
-        let expected_metadata = r#"{"clusterApi":"https://localhost:6443","oauth":{"clientId":"ys1000"},"baseURI":"/regions/region:region-04/proxy/ys1000/"}"#;
+        let expected_metadata = r#"{"clusterApi":"https://localhost:6443","oauth":{"clientId":"ys1000"},"baseURI":"/regions/region:region-04/proxy/ys1000"}"#;
         let expected_encoded = STANDARD.encode(expected_metadata);
         let expected = format!(
             "<html><script type=\"text/javascript\">\n  window._mig_meta = '{expected_encoded}';\n</script></html>"
