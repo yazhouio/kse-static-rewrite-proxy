@@ -41,6 +41,33 @@ fn rewrites_the_fixed_kubekey_installer_html_path() {
 }
 
 #[test]
+fn rewrites_the_fixed_ys1000_index_html_path() {
+    let policy = RewritePolicy::for_allowlisted_extensions(
+        "/regions/region:region-04",
+        std::iter::empty::<&str>(),
+    );
+
+    for method in ["GET", "HEAD"] {
+        assert!(matches!(
+            policy.decide(method, "/regions/region:region-04/proxy/ys1000/"),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::Ys1000IndexHtml,
+                ref extension,
+                head_only,
+            } if extension == "ys1000" && head_only == method.eq_ignore_ascii_case("HEAD")
+        ));
+    }
+
+    for (method, path) in [
+        ("GET", "/proxy/ys1000/"),
+        ("POST", "/regions/region:region-04/proxy/ys1000/"),
+        ("GET", "/regions/region:region-04/proxy/another-app/"),
+    ] {
+        assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
+    }
+}
+
+#[test]
 fn rewrites_javascript_below_named_proxy_paths() {
     let policy = RewritePolicy::for_allowlisted_extensions(
         "/regions/region:region-04",

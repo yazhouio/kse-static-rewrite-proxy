@@ -2,11 +2,12 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v23";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v24";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
+const YS1000_PROXY_PATH: &str = "/proxy/ys1000/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
@@ -16,6 +17,7 @@ pub enum RewriteProfile {
     Kubekey,
     KubekeyAssetJs,
     ProxyJs,
+    Ys1000IndexHtml,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +115,14 @@ impl RewritePolicy {
             };
         }
 
+        if path == format!("{}{YS1000_PROXY_PATH}", self.base_path) {
+            return RewriteDecision::Rewrite {
+                profile: RewriteProfile::Ys1000IndexHtml,
+                extension: "ys1000".to_owned(),
+                head_only: method.eq_ignore_ascii_case("HEAD"),
+            };
+        }
+
         let named_proxy_prefix = format!("{}{NAMED_PROXY_ROOT}", self.base_path);
         if let Some(proxy_path) = path.strip_prefix(&named_proxy_prefix)
             && let Some((name, asset_path)) = proxy_path.split_once('/')
@@ -185,6 +195,7 @@ impl RewritePolicy {
             RewriteProfile::ProxyJs => "proxy-js",
             RewriteProfile::Kubekey => "kubekey",
             RewriteProfile::KubekeyAssetJs => "kubekey-assets",
+            RewriteProfile::Ys1000IndexHtml => "ys1000",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
@@ -285,6 +296,13 @@ pub(crate) fn build_selected_response_rewriter(
                     source.as_bytes(),
                     format!("{base_path}{source}").into_bytes(),
                 )],
+                max_bytes,
+            )
+        }
+        RewriteProfile::Ys1000IndexHtml => {
+            let source = YS1000_PROXY_PATH.as_bytes();
+            StreamingRewritePipeline::new(
+                [(source, [base_path.as_bytes(), source].concat())],
                 max_bytes,
             )
         }
@@ -664,6 +682,47 @@ mod tests {
                 1024,
             )
             .expect("valid rewrite rules");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn ys1000_index_html_rewriter_prefixes_resource_urls_idempotently() {
+        let input = r#"<!DOCTYPE html><link rel="icon" href="/proxy/ys1000/favicon.ico"><link rel="stylesheet" href="/proxy/ys1000/main.css"><script src="/proxy/ys1000/app.bundle.js"></script><a href="/proxy/ys1000-old/">old</a><a href="/proxy/another-app/">other</a>"#;
+        let expected = r#"<!DOCTYPE html><link rel="icon" href="/regions/region:region-04/proxy/ys1000/favicon.ico"><link rel="stylesheet" href="/regions/region:region-04/proxy/ys1000/main.css"><script src="/regions/region:region-04/proxy/ys1000/app.bundle.js"></script><a href="/proxy/ys1000-old/">old</a><a href="/proxy/another-app/">other</a>"#;
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::Ys1000IndexHtml,
+                "/regions/region:region-04",
+                "ys1000",
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::Ys1000IndexHtml,
+                "/regions/region:region-04",
+                "ys1000",
+                1024,
+            )
+            .expect("valid rewrite rule");
             let mut idempotent_output = second_pass.push(&output).expect("second pass");
             idempotent_output.extend(second_pass.finish().expect("finish second pass"));
             assert_eq!(

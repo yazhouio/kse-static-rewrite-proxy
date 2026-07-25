@@ -594,6 +594,7 @@ mod tests {
             RewriteProfile::Kubekey,
             RewriteProfile::KubekeyAssetJs,
             RewriteProfile::ProxyJs,
+            RewriteProfile::Ys1000IndexHtml,
         ] {
             assert!(!is_rewritable_content_type(profile, Some(&text_plain)));
         }

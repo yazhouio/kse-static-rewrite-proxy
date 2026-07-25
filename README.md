@@ -69,6 +69,10 @@ rewrites `/kapis/kubekey.kubesphere.io` to
 `{basePath}/kapis/kubekey.kubesphere.io`. Other KAPIS roots and JavaScript
 outside the Kubekey assets directory are unchanged by this additional rule.
 
+The YS1000 index HTML at `{basePath}/proxy/ys1000/` rewrites its fixed
+`/proxy/ys1000/` resource root to `{basePath}/proxy/ys1000/`. This covers its
+favicon, stylesheet, and script URLs without affecting other named proxies.
+
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
 For eligible text assets the sidecar asks the BFF for an identity response, performs the bounded literal rewrite, then lets Pingora negotiate downstream gzip, Brotli, or Zstandard compression from the browser's original `Accept-Encoding` header.
