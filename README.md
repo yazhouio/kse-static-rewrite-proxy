@@ -19,7 +19,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
-### 当前重写规则统计（v30）
+### 当前重写规则统计（v31）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -32,7 +32,7 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 | 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` | 已启用且未禁用的扩展；`distribution` 等于 `extension`，或外层为 `{name}-frontend` 时等于 `{name}`；只匹配当前目录的直接 `.js` 文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
 | 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` 或 `.../dist/{name}/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址；Kubekey HTML 还会将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
-| 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 通常将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}`；Kubekey 仅替换完整的双引号字符串 `"/proxy/kubekey"` |
+| 5 | Ys1000 MIG Meta HTML | `{basePath}/proxy/ys1000/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | Base64 解码 `window._mig_meta` 中的 JSON，将顶层 `baseURI` 从 `/proxy/ys1000` 改为 `{basePath}/proxy/ys1000/`，再按原位置重新编码；同时继承规则 4 的 HTML 属性修改 |
 | 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 仅将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
 
 公共行为：
@@ -46,8 +46,8 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 - 由 Named Proxy HTML 规则选中的候选响应，如果最终 Content-Type 不是
   HTML/XHTML，则不会返回 502，并保留 Range 与条件缓存请求语义；图片、字体、
   视频等二进制资源的正文内容不修改，但候选请求仍会向上游请求 identity 编码。
-- Named Proxy JavaScript 的优先级高于通用 HTML；Kubekey assets JavaScript
-  的优先级又高于普通 Named Proxy JavaScript。
+- 普通 Named Proxy JavaScript 不再重写；Kubekey assets JavaScript 是唯一的
+  Named Proxy JavaScript 特例，并优先于通用 HTML。
 
 ### 完整规则明细
 
@@ -152,28 +152,29 @@ src="{basePath}/proxy/{name}/..."
 Range 和条件缓存请求语义。由于候选请求已经向上游请求 identity 编码，旁路响应
 不保证保留原来的压缩表示。
 
-#### 5. Named Proxy JavaScript
+#### 5. Ys1000 MIG Meta HTML
 
-匹配 `{basePath}/proxy/{name}/**/*.js`，不受扩展白名单控制。
+匹配 `{basePath}/proxy/ys1000/` 及其任意子路径，并继承规则 4 的 HTML
+属性修改。响应正文中的赋值：
 
-- 非 Kubekey：正文中的固定 `/proxy/{name}` 根路径添加 `basePath`，包括其后
-  仍有子路径的字符串；已经紧邻相同 `basePath` 的输入不重复添加。
-- Kubekey：只替换完整双引号字符串：
+```text
+window._mig_meta = '<Base64 JSON>';
+```
 
-  ```text
-  "/proxy/kubekey"
-          ->
-  "{basePath}/proxy/kubekey"
-  ```
+会先使用标准 Base64 解码。若结果是 JSON，并且顶层 `baseURI` 的值恰好为
+`/proxy/ys1000`，则改为：
 
-  `"/proxy/kubekey/..."`、`'/proxy/kubekey'` 和相似前缀不匹配。这里的
-  “完整”指 JavaScript 字符串本身；在 `basePath + "/proxy/kubekey"` 表达式中，
-  后面的双引号字符串仍然会匹配。
+```text
+{basePath}/proxy/ys1000/
+```
+
+修改后的 JSON 使用标准 Base64 重新编码并放回原赋值位置。赋值周围的 HTML、
+空白和引号不变；无效 Base64、无效 JSON、缺少 `baseURI` 或其他 `baseURI`
+值均保持原样。已经是目标值时不重复修改。
 
 #### 6. Kubekey Assets JavaScript
 
-匹配 `{basePath}/proxy/kubekey/assets/**/*.js`，优先于普通 Named Proxy
-JavaScript，并且只执行：
+匹配 `{basePath}/proxy/kubekey/assets/**/*.js`，并且只执行：
 
 ```text
 /57516e69-2cb0-4d48-a8a8-2833cfff87a9
@@ -182,8 +183,7 @@ JavaScript，并且只执行：
 ```
 
 固定旧根路径之后的子路径保持不变。规则 6 不修改 `"/proxy/kubekey"` 或
-`/kapis/kubekey.kubesphere.io`；由于它优先于普通 Named Proxy JavaScript，
-assets 目录下的 JavaScript 也不会继承规则 5 对 `"/proxy/kubekey"` 的替换。
+`/kapis/kubekey.kubesphere.io`。其他 Named Proxy JavaScript 全部旁路。
 
 ### 响应类型与缓存规则
 
@@ -288,7 +288,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v30","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v31","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.

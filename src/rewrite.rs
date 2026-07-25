@@ -1,8 +1,12 @@
 use std::collections::HashSet;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
+use serde_json::Value;
+
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v30";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v31";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
@@ -15,7 +19,7 @@ pub enum RewriteProfile {
     JsBundle,
     KubekeyAssetJs,
     NamedProxyHtml,
-    ProxyJs,
+    Ys1000Html,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,18 +114,26 @@ impl RewritePolicy {
             if let Some((name, asset_path)) = proxy_path.split_once('/')
                 && !name.is_empty()
             {
-                let is_javascript_asset = !asset_path.is_empty() && asset_path.ends_with(".js");
-                return RewriteDecision::Rewrite {
-                    profile: if is_javascript_asset
-                        && name == KUBEKEY_NAME
-                        && asset_path.starts_with("assets/")
-                    {
-                        RewriteProfile::KubekeyAssetJs
-                    } else if is_javascript_asset {
-                        RewriteProfile::ProxyJs
+                if name == "ys1000" {
+                    return RewriteDecision::Rewrite {
+                        profile: RewriteProfile::Ys1000Html,
+                        extension: name.to_owned(),
+                        head_only: method.eq_ignore_ascii_case("HEAD"),
+                    };
+                }
+                if !asset_path.is_empty() && asset_path.ends_with(".js") {
+                    return if name == KUBEKEY_NAME && asset_path.starts_with("assets/") {
+                        RewriteDecision::Rewrite {
+                            profile: RewriteProfile::KubekeyAssetJs,
+                            extension: name.to_owned(),
+                            head_only: method.eq_ignore_ascii_case("HEAD"),
+                        }
                     } else {
-                        RewriteProfile::NamedProxyHtml
-                    },
+                        RewriteDecision::Bypass
+                    };
+                }
+                return RewriteDecision::Rewrite {
+                    profile: RewriteProfile::NamedProxyHtml,
                     extension: name.to_owned(),
                     head_only: method.eq_ignore_ascii_case("HEAD"),
                 };
@@ -177,9 +189,9 @@ impl RewritePolicy {
         extension: &'a str,
     ) -> &'a str {
         match profile {
-            RewriteProfile::ProxyJs => "proxy-js",
             RewriteProfile::KubekeyAssetJs => "kubekey-assets",
             RewriteProfile::NamedProxyHtml => "proxy-html",
+            RewriteProfile::Ys1000Html => "ys1000-html",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
@@ -273,25 +285,7 @@ pub(crate) fn build_selected_response_rewriter(
             [kubekey_legacy_root_rule(base_path)],
             max_bytes,
         ),
-        RewriteProfile::ProxyJs => {
-            let source = format!("{NAMED_PROXY_ROOT}{extension}");
-            if extension == KUBEKEY_NAME {
-                StreamingRewritePipeline::new_with_exact(
-                    std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
-                    [kubekey_proxy_exact_rule(base_path)],
-                    max_bytes,
-                )
-            } else {
-                StreamingRewritePipeline::new(
-                    [(
-                        source.as_bytes(),
-                        format!("{base_path}{source}").into_bytes(),
-                    )],
-                    max_bytes,
-                )
-            }
-        }
-        RewriteProfile::NamedProxyHtml => {
+        RewriteProfile::NamedProxyHtml | RewriteProfile::Ys1000Html => {
             let proxy_root = format!("{NAMED_PROXY_ROOT}{extension}/");
             let mut exact_rules: Vec<_> = [" ", "\t", "\r", "\n", "\x0C"]
                 .into_iter()
@@ -307,21 +301,86 @@ pub(crate) fn build_selected_response_rewriter(
             if extension == KUBEKEY_NAME {
                 exact_rules.push(kubekey_legacy_root_rule(base_path));
             }
-            StreamingRewritePipeline::new_with_exact(
+            let pipeline = StreamingRewritePipeline::new_with_exact(
                 std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
                 exact_rules,
                 max_bytes,
-            )
+            )?;
+            if profile == RewriteProfile::Ys1000Html {
+                let desired_base_uri = format!("{base_path}{NAMED_PROXY_ROOT}{extension}/");
+                Ok(pipeline.with_buffered_transform(move |input| {
+                    rewrite_mig_meta_base_uri(input, &desired_base_uri)
+                }))
+            } else {
+                Ok(pipeline)
+            }
         }
     }
 }
 
-fn kubekey_proxy_exact_rule(base_path: &str) -> (Vec<u8>, Vec<u8>) {
-    let proxy_path = format!("{NAMED_PROXY_ROOT}{KUBEKEY_NAME}");
-    (
-        format!("\"{proxy_path}\"").into_bytes(),
-        format!("\"{base_path}{proxy_path}\"").into_bytes(),
-    )
+fn rewrite_mig_meta_base_uri(input: &[u8], desired_base_uri: &str) -> Vec<u8> {
+    const ASSIGNMENT: &[u8] = b"window._mig_meta";
+
+    let mut output = Vec::with_capacity(input.len());
+    let mut search_from = 0;
+    let mut copied_until = 0;
+
+    while let Some(relative_start) = memchr::memmem::find(&input[search_from..], ASSIGNMENT) {
+        let assignment_start = search_from + relative_start;
+        let mut position = assignment_start + ASSIGNMENT.len();
+        skip_ascii_whitespace(input, &mut position);
+        if input.get(position) != Some(&b'=') {
+            search_from = assignment_start + ASSIGNMENT.len();
+            continue;
+        }
+        position += 1;
+        skip_ascii_whitespace(input, &mut position);
+        let Some(quote @ (b'\'' | b'"')) = input.get(position).copied() else {
+            search_from = assignment_start + ASSIGNMENT.len();
+            continue;
+        };
+        let encoded_start = position + 1;
+        let Some(relative_end) = memchr::memchr(quote, &input[encoded_start..]) else {
+            break;
+        };
+        let encoded_end = encoded_start + relative_end;
+        search_from = encoded_end + 1;
+
+        let Some(rewritten) =
+            rewrite_mig_meta_payload(&input[encoded_start..encoded_end], desired_base_uri)
+        else {
+            continue;
+        };
+        output.extend_from_slice(&input[copied_until..encoded_start]);
+        output.extend_from_slice(&rewritten);
+        copied_until = encoded_end;
+    }
+
+    if copied_until == 0 {
+        return input.to_vec();
+    }
+    output.extend_from_slice(&input[copied_until..]);
+    output
+}
+
+fn rewrite_mig_meta_payload(encoded: &[u8], desired_base_uri: &str) -> Option<Vec<u8>> {
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let mut metadata: Value = serde_json::from_slice(&decoded).ok()?;
+    let base_uri = metadata.get_mut("baseURI")?;
+    match base_uri.as_str()? {
+        "/proxy/ys1000" => *base_uri = Value::String(desired_base_uri.to_owned()),
+        current if current == desired_base_uri => return None,
+        _ => return None,
+    }
+    serde_json::to_vec(&metadata)
+        .ok()
+        .map(|metadata| STANDARD.encode(metadata).into_bytes())
+}
+
+fn skip_ascii_whitespace(input: &[u8], position: &mut usize) {
+    while input.get(*position).is_some_and(u8::is_ascii_whitespace) {
+        *position += 1;
+    }
 }
 
 fn kubekey_legacy_root_rule(base_path: &str) -> (Vec<u8>, Vec<u8>) {
@@ -425,6 +484,9 @@ pub(crate) fn build_response_rewriter(
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+
     use super::*;
 
     const SOURCE: &[u8] = b"/extensions-static/ks-console-embed/dist/v3dist/";
@@ -633,64 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn kubekey_proxy_js_rewriter_only_prefixes_exact_double_quoted_root_idempotently() {
-        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
-
-        for split in 0..=input.len() {
-            let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::ProxyJs,
-                "/regions/region:region-04",
-                "kubekey",
-                1024,
-            )
-            .expect("valid rewrite rule");
-            let mut output = pipeline
-                .push(&input.as_bytes()[..split])
-                .expect("first chunk");
-            output.extend(
-                pipeline
-                    .push(&input.as_bytes()[split..])
-                    .expect("second chunk"),
-            );
-            output.extend(pipeline.finish().expect("finish stream"));
-            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
-
-            let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::ProxyJs,
-                "/regions/region:region-04",
-                "kubekey",
-                1024,
-            )
-            .expect("valid rewrite rule");
-            let mut idempotent_output = second_pass.push(&output).expect("second pass");
-            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
-            assert_eq!(
-                idempotent_output,
-                expected.as_bytes(),
-                "second pass after byte {split}"
-            );
-        }
-    }
-
-    #[test]
-    fn non_kubekey_proxy_js_rewriter_keeps_prefix_behavior() {
-        let input = r#"const root="/proxy/ys1000";const asset="/proxy/ys1000/assets/data.json";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/ys1000";const asset="/regions/region:region-04/proxy/ys1000/assets/data.json";"#;
-        let mut pipeline = build_selected_response_rewriter(
-            RewriteProfile::ProxyJs,
-            "/regions/region:region-04",
-            "ys1000",
-            1024,
-        )
-        .expect("valid rewrite rule");
-        let mut output = pipeline.push(input.as_bytes()).expect("rewrite input");
-        output.extend(pipeline.finish().expect("finish stream"));
-
-        assert_eq!(output, expected.as_bytes());
-    }
-
-    #[test]
     fn kubekey_asset_js_rewriter_only_replaces_legacy_root_idempotently() {
         let input = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const endpoint="/57516e69-2cb0-4d48-a8a8-2833cfff87a9/api";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
         let expected = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/regions/region:region-04";const endpoint="/regions/region:region-04/api";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
@@ -738,7 +742,7 @@ mod tests {
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyHtml,
+                RewriteProfile::Ys1000Html,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,
@@ -756,10 +760,59 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::NamedProxyHtml,
+                RewriteProfile::Ys1000Html,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,
+            )
+            .expect("valid rewrite rule");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn ys1000_html_rewriter_updates_mig_meta_base_uri_across_chunk_boundaries_idempotently() {
+        let metadata = r#"{"clusterApi":"https://localhost:6443","oauth":{"clientId":"ys1000"},"baseURI":"/proxy/ys1000"}"#;
+        let encoded = STANDARD.encode(metadata);
+        let input = format!(
+            "<html><script type=\"text/javascript\">\n  window._mig_meta = '{encoded}';\n</script></html>"
+        );
+        let expected_metadata = r#"{"clusterApi":"https://localhost:6443","oauth":{"clientId":"ys1000"},"baseURI":"/regions/region:region-04/proxy/ys1000/"}"#;
+        let expected_encoded = STANDARD.encode(expected_metadata);
+        let expected = format!(
+            "<html><script type=\"text/javascript\">\n  window._mig_meta = '{expected_encoded}';\n</script></html>"
+        );
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::Ys1000Html,
+                "/regions/region:region-04",
+                "ys1000",
+                4096,
+            )
+            .expect("valid rewrite rule");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::Ys1000Html,
+                "/regions/region:region-04",
+                "ys1000",
+                4096,
             )
             .expect("valid rewrite rule");
             let mut idempotent_output = second_pass.push(&output).expect("second pass");

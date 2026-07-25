@@ -491,7 +491,10 @@ fn should_force_unconditional_full_response(profile: RewriteProfile) -> bool {
 }
 
 fn selects_html_by_response_content_type(profile: RewriteProfile) -> bool {
-    profile == RewriteProfile::NamedProxyHtml
+    matches!(
+        profile,
+        RewriteProfile::NamedProxyHtml | RewriteProfile::Ys1000Html
+    )
 }
 
 fn is_identity_encoding(value: Option<&HeaderValue>) -> bool {
@@ -603,6 +606,10 @@ mod tests {
             RewriteProfile::NamedProxyHtml,
             Some(&HeaderValue::from_static("application/xhtml+xml"))
         ));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::Ys1000Html,
+            Some(&HeaderValue::from_static("text/html"))
+        ));
         assert!(!is_rewritable_content_type(
             RewriteProfile::NamedProxyHtml,
             Some(&HeaderValue::from_static("text/css"))
@@ -626,7 +633,7 @@ mod tests {
             RewriteProfile::ConsoleV3,
             RewriteProfile::KubekeyAssetJs,
             RewriteProfile::NamedProxyHtml,
-            RewriteProfile::ProxyJs,
+            RewriteProfile::Ys1000Html,
         ] {
             assert!(!is_rewritable_content_type(profile, Some(&text_plain)));
         }
@@ -637,12 +644,14 @@ mod tests {
         assert!(!should_force_unconditional_full_response(
             RewriteProfile::NamedProxyHtml
         ));
+        assert!(!should_force_unconditional_full_response(
+            RewriteProfile::Ys1000Html
+        ));
         for profile in [
             RewriteProfile::ConsoleV3,
             RewriteProfile::FrontendIndexJsBundle,
             RewriteProfile::JsBundle,
             RewriteProfile::KubekeyAssetJs,
-            RewriteProfile::ProxyJs,
         ] {
             assert!(should_force_unconditional_full_response(profile));
         }

@@ -27,6 +27,7 @@ pub struct StreamingRewritePipeline {
 
 #[derive(Debug)]
 enum StreamingRewriter {
+    Buffered(StreamingBufferedRewriter),
     Literal(StreamingLiteralRewriter),
     ExpressionPattern(StreamingExpressionPatternRewriter),
 }
@@ -34,6 +35,7 @@ enum StreamingRewriter {
 impl StreamingRewriter {
     fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {
         match self {
+            Self::Buffered(rewriter) => rewriter.push(input),
             Self::Literal(rewriter) => rewriter.push(input),
             Self::ExpressionPattern(rewriter) => rewriter.push(input),
         }
@@ -41,6 +43,7 @@ impl StreamingRewriter {
 
     fn finish(&mut self) -> Result<Vec<u8>, RewriteError> {
         match self {
+            Self::Buffered(rewriter) => rewriter.finish(),
             Self::Literal(rewriter) => rewriter.finish(),
             Self::ExpressionPattern(rewriter) => rewriter.finish(),
         }
@@ -177,6 +180,19 @@ impl StreamingRewritePipeline {
         Ok(self)
     }
 
+    pub(crate) fn with_buffered_transform<F>(mut self, transform: F) -> Self
+    where
+        F: Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static,
+    {
+        self.rewriters
+            .push(StreamingRewriter::Buffered(StreamingBufferedRewriter {
+                transform: Box::new(transform),
+                pending: Vec::new(),
+                finished: false,
+            }));
+        self
+    }
+
     fn from_rewriters(
         rewriters: Vec<StreamingRewriter>,
         max_bytes: usize,
@@ -232,6 +248,42 @@ impl StreamingRewritePipeline {
             output = next;
         }
         Ok(output)
+    }
+}
+
+type BufferedTransform = dyn Fn(&[u8]) -> Vec<u8> + Send + Sync;
+
+struct StreamingBufferedRewriter {
+    transform: Box<BufferedTransform>,
+    pending: Vec<u8>,
+    finished: bool,
+}
+
+impl std::fmt::Debug for StreamingBufferedRewriter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StreamingBufferedRewriter")
+            .field("pending_bytes", &self.pending.len())
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
+impl StreamingBufferedRewriter {
+    fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {
+        if self.finished {
+            return Err(RewriteError::AlreadyFinished);
+        }
+        self.pending.extend_from_slice(input);
+        Ok(Vec::new())
+    }
+
+    fn finish(&mut self) -> Result<Vec<u8>, RewriteError> {
+        if self.finished {
+            return Err(RewriteError::AlreadyFinished);
+        }
+        self.finished = true;
+        Ok((self.transform)(&self.pending))
     }
 }
 

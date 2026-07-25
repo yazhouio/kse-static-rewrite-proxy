@@ -7,35 +7,45 @@ fn rewrites_html_at_and_below_named_proxy_paths() {
         std::iter::empty::<&str>(),
     );
 
-    for (method, name, nested_path) in [
-        ("GET", "kubekey", ""),
-        ("HEAD", "kubekey", ""),
-        ("GET", "ys1000", ""),
-        ("HEAD", "ys1000", "pages/login"),
-        ("GET", "another-app", "xxx/xx/xx"),
-        ("GET", "app:name", "nested/"),
+    for (method, name, nested_path, expected_profile) in [
+        ("GET", "kubekey", "", RewriteProfile::NamedProxyHtml),
+        ("HEAD", "kubekey", "", RewriteProfile::NamedProxyHtml),
+        ("GET", "ys1000", "", RewriteProfile::Ys1000Html),
+        ("HEAD", "ys1000", "pages/login", RewriteProfile::Ys1000Html),
+        (
+            "GET",
+            "ys1000",
+            "routes/page.js",
+            RewriteProfile::Ys1000Html,
+        ),
+        (
+            "GET",
+            "another-app",
+            "xxx/xx/xx",
+            RewriteProfile::NamedProxyHtml,
+        ),
+        ("GET", "app:name", "nested/", RewriteProfile::NamedProxyHtml),
     ] {
         let path = format!("/regions/region:region-04/proxy/{name}/{nested_path}");
         assert!(matches!(
             policy.decide(method, &path),
             RewriteDecision::Rewrite {
-                profile: RewriteProfile::NamedProxyHtml,
+                profile,
                 ref extension,
                 head_only,
-            } if extension == name && head_only == method.eq_ignore_ascii_case("HEAD")
+            } if profile == expected_profile
+                && extension == name
+                && head_only == method.eq_ignore_ascii_case("HEAD")
         ));
     }
 
-    assert!(matches!(
+    assert_eq!(
         policy.decide(
             "GET",
             "/regions/region:region-04/proxy/kubekey/assets2/index.js"
         ),
-        RewriteDecision::Rewrite {
-            profile: RewriteProfile::ProxyJs,
-            ..
-        }
-    ));
+        RewriteDecision::Bypass
+    );
 
     for (method, path) in [
         ("GET", "/proxy/kubekey/"),
@@ -52,42 +62,28 @@ fn rewrites_html_at_and_below_named_proxy_paths() {
 }
 
 #[test]
-fn rewrites_javascript_below_named_proxy_paths() {
+fn bypasses_javascript_below_named_proxy_paths_except_kubekey_assets() {
     let policy = RewritePolicy::for_allowlisted_extensions(
         "/regions/region:region-04",
         std::iter::empty::<&str>(),
     );
 
-    for (method, path, expected_name) in [
-        (
-            "GET",
-            "/regions/region:region-04/proxy/kubekey/index.js",
-            "kubekey",
-        ),
+    for (method, path) in [
+        ("GET", "/regions/region:region-04/proxy/kubekey/index.js"),
         (
             "GET",
             "/regions/region:region-04/proxy/another-app/dist/main.js",
-            "another-app",
         ),
         (
             "GET",
             "/regions/region:region-04/proxy/app:name/dist/main.js",
-            "app:name",
         ),
         (
             "GET",
             "/regions/region:region-04/proxy/app%20name/dist/main.js",
-            "app%20name",
         ),
     ] {
-        assert!(matches!(
-            policy.decide(method, path),
-            RewriteDecision::Rewrite {
-                profile: RewriteProfile::ProxyJs,
-                ref extension,
-                head_only,
-            } if extension == expected_name && head_only == method.eq_ignore_ascii_case("HEAD")
-        ));
+        assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
     }
 
     for method in ["GET", "HEAD"] {
@@ -394,10 +390,6 @@ fn named_proxy_metrics_use_a_bounded_profile_label() {
         std::iter::empty::<&str>(),
     );
 
-    assert_eq!(
-        policy.metrics_extension_label(RewriteProfile::ProxyJs, "arbitrary:name"),
-        "proxy-js"
-    );
     assert_eq!(
         policy.metrics_extension_label(RewriteProfile::NamedProxyHtml, "arbitrary:name"),
         "proxy-html"
