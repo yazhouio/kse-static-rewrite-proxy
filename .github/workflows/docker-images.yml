@@ -56,6 +56,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            KSE_GIT_COMMIT=${{ github.sha }}
           push: false
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
           cache-to: type=gha,mode=min,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
@@ -68,6 +70,8 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
+          build-args: |
+            KSE_GIT_COMMIT=${{ github.sha }}
           outputs: type=image,name=${{ env.KUBESPHERE_HUB_REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}
           cache-to: type=gha,mode=min,scope=${{ env.IMAGE_NAME }}-${{ matrix.arch }}

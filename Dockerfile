@@ -7,6 +7,8 @@ RUN apt-get update \
 WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY src ./src
+ARG KSE_GIT_COMMIT=unknown
+ENV KSE_GIT_COMMIT=${KSE_GIT_COMMIT}
 RUN cargo build --locked --release
 
 FROM gcr.io/distroless/cc-debian12:nonroot

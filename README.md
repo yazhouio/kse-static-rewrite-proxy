@@ -271,13 +271,34 @@ Then access the Console through `http://127.0.0.1:8080`. Internal endpoints are 
 
 - `/healthz`: process liveness.
 - `/readyz`: loopback BFF connectivity.
+- `/version`: package version, rewrite rule version, and build Git commit.
 - `/metrics`: low-cardinality Prometheus metrics.
+
+Query the running build with `wget`:
+
+```bash
+wget -qO- http://127.0.0.1:9090/version
+```
+
+```json
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v28","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+```
+
+The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.
+Local builds report `"gitCommit":"unknown"` unless `KSE_GIT_COMMIT` is set at
+compile time.
 
 The Kubernetes example names `9090` as `admin-http` for direct Pod probes. Do not add that port to the Console Service or external Gateway. If Prometheus uses Pod discovery, restrict access with the cluster's monitoring/network policy.
 
 ## Deployment and rollback
 
-Build the container with `docker build -t <registry>/kse-static-rewrite-proxy:0.1.0 .`. [deploy/sidecar-example.yaml](deploy/sidecar-example.yaml) is an illustrative strategic-merge template, not a standalone `kubectl apply` manifest. Copy its container changes into the real Console Deployment (or reference it from a Kustomization as a patch), and adapt the Deployment name, ConfigMap volume, labels, and image registry.
+Build the container with
+`docker build --build-arg KSE_GIT_COMMIT="$(git rev-parse HEAD)" -t <registry>/kse-static-rewrite-proxy:0.1.0 .`.
+[deploy/sidecar-example.yaml](deploy/sidecar-example.yaml) is an illustrative
+strategic-merge template, not a standalone `kubectl apply` manifest. Copy its
+container changes into the real Console Deployment (or reference it from a
+Kustomization as a patch), and adapt the Deployment name, ConfigMap volume,
+labels, and image registry.
 
 For a canary, create a separate one-replica Console Deployment with both containers and a unique label such as `rollout: rewrite-canary`. Create a canary Service selecting only that label and route a test hostname, header match, or small weighted share to it. Do not change the stable Service yet. Validate JS/CSS/JSON/HTML assets, binary bypass, authentication, APIs, WebSockets, SSE, cache revalidation, and queue metrics.
 
