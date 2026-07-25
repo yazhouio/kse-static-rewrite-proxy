@@ -2,15 +2,17 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v20";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v21";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
+const NAMED_PROXY_ROOT: &str = "/proxy/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
     ConsoleV3,
     JsBundle,
     Kubekey,
+    ProxyJs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +110,20 @@ impl RewritePolicy {
             };
         }
 
+        let named_proxy_prefix = format!("{}{NAMED_PROXY_ROOT}", self.base_path);
+        if let Some(proxy_path) = path.strip_prefix(&named_proxy_prefix)
+            && let Some((name, asset_path)) = proxy_path.split_once('/')
+            && !name.is_empty()
+            && !asset_path.is_empty()
+            && asset_path.ends_with(".js")
+        {
+            return RewriteDecision::Rewrite {
+                profile: RewriteProfile::ProxyJs,
+                extension: name.to_owned(),
+                head_only: method.eq_ignore_ascii_case("HEAD"),
+            };
+        }
+
         let jsbundle_prefix = format!("{}/jsbundles/", self.base_path);
         if let Some(bundle_path) = path.strip_prefix(&jsbundle_prefix)
             && let Some((extension, distribution_path)) = bundle_path.split_once("/dist/")
@@ -149,10 +165,18 @@ impl RewritePolicy {
         }
     }
 
-    pub fn metrics_extension_label<'a>(&self, extension: &'a str) -> &'a str {
-        match self.extensions {
-            ExtensionMatcher::All => ALL_EXTENSIONS_WILDCARD,
-            ExtensionMatcher::Allowlist(_) => extension,
+    pub fn metrics_extension_label<'a>(
+        &self,
+        profile: RewriteProfile,
+        extension: &'a str,
+    ) -> &'a str {
+        match profile {
+            RewriteProfile::ProxyJs => "proxy-js",
+            RewriteProfile::Kubekey => "kubekey",
+            RewriteProfile::ConsoleV3 | RewriteProfile::JsBundle => match self.extensions {
+                ExtensionMatcher::All => ALL_EXTENSIONS_WILDCARD,
+                ExtensionMatcher::Allowlist(_) => extension,
+            },
         }
     }
 
@@ -225,6 +249,16 @@ pub(crate) fn build_selected_response_rewriter(
             )],
             max_bytes,
         ),
+        RewriteProfile::ProxyJs => {
+            let source = format!("{NAMED_PROXY_ROOT}{extension}");
+            StreamingRewritePipeline::new(
+                [(
+                    source.as_bytes(),
+                    format!("{base_path}{source}").into_bytes(),
+                )],
+                max_bytes,
+            )
+        }
     }
 }
 
@@ -514,6 +548,47 @@ mod tests {
 
             let mut second_pass = build_selected_response_rewriter(
                 RewriteProfile::Kubekey,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn named_proxy_js_rewriter_prefixes_its_own_proxy_root_idempotently() {
+        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const other="/proxy/another-app";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/regions/region:region-04/proxy/kubekey/assets/data.json";const other="/proxy/another-app";"#;
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::ProxyJs,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rule");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::ProxyJs,
                 "/regions/region:region-04",
                 "kubekey",
                 1024,

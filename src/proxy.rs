@@ -358,11 +358,17 @@ impl ProxyHttp for KseRewriteProxy {
             self.metrics.active.dec();
         }
         let extension = ctx.extension.as_deref().unwrap_or("none");
-        let metrics_extension = ctx
-            .extension
-            .as_deref()
-            .map(|extension| self.policy.metrics_extension_label(extension))
-            .unwrap_or("none");
+        let metrics_extension = match (&ctx.decision, ctx.extension.as_deref()) {
+            (
+                RewriteDecision::Rewrite {
+                    profile,
+                    extension: _,
+                    head_only: _,
+                },
+                Some(extension),
+            ) => self.policy.metrics_extension_label(*profile, extension),
+            _ => "none",
+        };
         let outcome = if error_value.is_some() {
             "error"
         } else {

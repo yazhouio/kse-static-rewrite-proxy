@@ -23,11 +23,67 @@ fn rewrites_the_fixed_kubekey_installer_html_path() {
 
     for (method, path) in [
         ("GET", "/proxy/kubekey/"),
+        ("POST", "/regions/region:region-04/proxy/kubekey/"),
+    ] {
+        assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
+    }
+}
+
+#[test]
+fn rewrites_javascript_below_named_proxy_paths() {
+    let policy = RewritePolicy::for_allowlisted_extensions(
+        "/regions/region:region-04",
+        std::iter::empty::<&str>(),
+    );
+
+    for (method, path, expected_name) in [
         (
             "GET",
+            "/regions/region:region-04/proxy/kubekey/index.js",
+            "kubekey",
+        ),
+        (
+            "HEAD",
+            "/regions/region:region-04/proxy/kubekey/assets/chunks/index.js",
+            "kubekey",
+        ),
+        (
+            "GET",
+            "/regions/region:region-04/proxy/another-app/dist/main.js",
+            "another-app",
+        ),
+        (
+            "GET",
+            "/regions/region:region-04/proxy/app:name/dist/main.js",
+            "app:name",
+        ),
+        (
+            "GET",
+            "/regions/region:region-04/proxy/app%20name/dist/main.js",
+            "app%20name",
+        ),
+    ] {
+        assert!(matches!(
+            policy.decide(method, path),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::ProxyJs,
+                ref extension,
+                head_only,
+            } if extension == expected_name && head_only == method.eq_ignore_ascii_case("HEAD")
+        ));
+    }
+
+    for (method, path) in [
+        (
+            "GET",
+            "/regions/region:region-04/proxy/kubekey/assets/index.css",
+        ),
+        ("GET", "/proxy/kubekey/assets/index.js"),
+        (
+            "POST",
             "/regions/region:region-04/proxy/kubekey/assets/index.js",
         ),
-        ("POST", "/regions/region:region-04/proxy/kubekey/"),
+        ("GET", "/regions/region:region-04/proxy//assets/index.js"),
     ] {
         assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
     }
@@ -222,8 +278,27 @@ fn wildcard_collapses_the_extension_metrics_label() {
     let allowlist =
         RewritePolicy::for_allowlisted_extensions("/regions/region:shenzhen", ["kubeeye"]);
 
-    assert_eq!(wildcard.metrics_extension_label("kubeeye"), "*");
-    assert_eq!(allowlist.metrics_extension_label("kubeeye"), "kubeeye");
+    assert_eq!(
+        wildcard.metrics_extension_label(RewriteProfile::ConsoleV3, "kubeeye"),
+        "*"
+    );
+    assert_eq!(
+        allowlist.metrics_extension_label(RewriteProfile::ConsoleV3, "kubeeye"),
+        "kubeeye"
+    );
+}
+
+#[test]
+fn named_proxy_metrics_use_a_bounded_profile_label() {
+    let policy = RewritePolicy::for_allowlisted_extensions(
+        "/regions/region:shenzhen",
+        std::iter::empty::<&str>(),
+    );
+
+    assert_eq!(
+        policy.metrics_extension_label(RewriteProfile::ProxyJs, "arbitrary:name"),
+        "proxy-js"
+    );
 }
 
 #[test]
@@ -252,5 +327,8 @@ fn existing_constructor_only_interprets_standalone_wildcard_as_match_all() {
         ),
         RewriteDecision::Bypass
     );
-    assert_eq!(policy.metrics_extension_label("kubeeye"), "kubeeye");
+    assert_eq!(
+        policy.metrics_extension_label(RewriteProfile::ConsoleV3, "kubeeye"),
+        "kubeeye"
+    );
 }

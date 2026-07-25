@@ -52,7 +52,12 @@ The remainder of each matching template-string URL is preserved, whether it cont
 The Kubekey web installer HTML at `{basePath}/proxy/kubekey/` is also
 rewritten independently of the extension allowlist. Its fixed
 `/proxy/kubekey/` asset root becomes `{basePath}/proxy/kubekey/`. Requests for
-the resulting JS, CSS, favicon, and other assets bypass response rewriting.
+the resulting CSS, favicon, and other non-JavaScript assets bypass response
+rewriting.
+
+JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
+independently of the extension allowlist. Within a selected response, the
+matching fixed `/proxy/{name}` root becomes `{basePath}/proxy/{name}`.
 
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
