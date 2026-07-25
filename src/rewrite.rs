@@ -2,22 +2,20 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v24";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v25";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
-const YS1000_PROXY_PATH: &str = "/proxy/ys1000/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RewriteProfile {
     ConsoleV3,
     FrontendIndexJsBundle,
     JsBundle,
-    Kubekey,
     KubekeyAssetJs,
+    NamedProxyIndexHtml,
     ProxyJs,
-    Ys1000IndexHtml,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,38 +105,34 @@ impl RewritePolicy {
             return RewriteDecision::Bypass;
         }
 
-        if path == format!("{}{KUBEKEY_PROXY_PATH}", self.base_path) {
-            return RewriteDecision::Rewrite {
-                profile: RewriteProfile::Kubekey,
-                extension: "kubekey".to_owned(),
-                head_only: method.eq_ignore_ascii_case("HEAD"),
-            };
-        }
-
-        if path == format!("{}{YS1000_PROXY_PATH}", self.base_path) {
-            return RewriteDecision::Rewrite {
-                profile: RewriteProfile::Ys1000IndexHtml,
-                extension: "ys1000".to_owned(),
-                head_only: method.eq_ignore_ascii_case("HEAD"),
-            };
-        }
-
         let named_proxy_prefix = format!("{}{NAMED_PROXY_ROOT}", self.base_path);
-        if let Some(proxy_path) = path.strip_prefix(&named_proxy_prefix)
-            && let Some((name, asset_path)) = proxy_path.split_once('/')
-            && !name.is_empty()
-            && !asset_path.is_empty()
-            && asset_path.ends_with(".js")
-        {
-            return RewriteDecision::Rewrite {
-                profile: if name == "kubekey" && asset_path.starts_with("assets/") {
-                    RewriteProfile::KubekeyAssetJs
-                } else {
-                    RewriteProfile::ProxyJs
-                },
-                extension: name.to_owned(),
-                head_only: method.eq_ignore_ascii_case("HEAD"),
-            };
+        if let Some(proxy_path) = path.strip_prefix(&named_proxy_prefix) {
+            if let Some(name) = proxy_path.strip_suffix('/')
+                && !name.is_empty()
+                && !name.contains('/')
+            {
+                return RewriteDecision::Rewrite {
+                    profile: RewriteProfile::NamedProxyIndexHtml,
+                    extension: name.to_owned(),
+                    head_only: method.eq_ignore_ascii_case("HEAD"),
+                };
+            }
+
+            if let Some((name, asset_path)) = proxy_path.split_once('/')
+                && !name.is_empty()
+                && !asset_path.is_empty()
+                && asset_path.ends_with(".js")
+            {
+                return RewriteDecision::Rewrite {
+                    profile: if name == "kubekey" && asset_path.starts_with("assets/") {
+                        RewriteProfile::KubekeyAssetJs
+                    } else {
+                        RewriteProfile::ProxyJs
+                    },
+                    extension: name.to_owned(),
+                    head_only: method.eq_ignore_ascii_case("HEAD"),
+                };
+            }
         }
 
         let jsbundle_prefix = format!("{}/jsbundles/", self.base_path);
@@ -193,9 +187,8 @@ impl RewritePolicy {
     ) -> &'a str {
         match profile {
             RewriteProfile::ProxyJs => "proxy-js",
-            RewriteProfile::Kubekey => "kubekey",
             RewriteProfile::KubekeyAssetJs => "kubekey-assets",
-            RewriteProfile::Ys1000IndexHtml => "ys1000",
+            RewriteProfile::NamedProxyIndexHtml => "proxy-html",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
@@ -269,13 +262,6 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::Kubekey => StreamingRewritePipeline::new(
-            [(
-                KUBEKEY_PROXY_PATH.as_bytes(),
-                format!("{base_path}{KUBEKEY_PROXY_PATH}").into_bytes(),
-            )],
-            max_bytes,
-        ),
         RewriteProfile::KubekeyAssetJs => {
             let proxy_source = KUBEKEY_PROXY_PATH.trim_end_matches('/').as_bytes().to_vec();
             let kapis_source = KUBEKEY_KAPIS_PATH.as_bytes().to_vec();
@@ -299,10 +285,23 @@ pub(crate) fn build_selected_response_rewriter(
                 max_bytes,
             )
         }
-        RewriteProfile::Ys1000IndexHtml => {
-            let source = YS1000_PROXY_PATH.as_bytes();
-            StreamingRewritePipeline::new(
-                [(source, [base_path.as_bytes(), source].concat())],
+        RewriteProfile::NamedProxyIndexHtml => {
+            let proxy_root = format!("{NAMED_PROXY_ROOT}{extension}/");
+            let attribute_rules =
+                [" ", "\t", "\r", "\n", "\x0C"]
+                    .into_iter()
+                    .flat_map(|boundary| {
+                        ["href=\"", "href='", "src=\"", "src='"].map(|attribute| {
+                            (
+                                format!("{boundary}{attribute}{proxy_root}").into_bytes(),
+                                format!("{boundary}{attribute}{base_path}{proxy_root}")
+                                    .into_bytes(),
+                            )
+                        })
+                    });
+            StreamingRewritePipeline::new_with_exact(
+                std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
+                attribute_rules,
                 max_bytes,
             )
         }
@@ -576,7 +575,7 @@ mod tests {
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::Kubekey,
+                RewriteProfile::NamedProxyIndexHtml,
                 "/regions/region:region-04",
                 "kubekey",
                 1024,
@@ -594,7 +593,7 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::Kubekey,
+                RewriteProfile::NamedProxyIndexHtml,
                 "/regions/region:region-04",
                 "kubekey",
                 1024,
@@ -694,12 +693,12 @@ mod tests {
 
     #[test]
     fn ys1000_index_html_rewriter_prefixes_resource_urls_idempotently() {
-        let input = r#"<!DOCTYPE html><link rel="icon" href="/proxy/ys1000/favicon.ico"><link rel="stylesheet" href="/proxy/ys1000/main.css"><script src="/proxy/ys1000/app.bundle.js"></script><a href="/proxy/ys1000-old/">old</a><a href="/proxy/another-app/">other</a>"#;
-        let expected = r#"<!DOCTYPE html><link rel="icon" href="/regions/region:region-04/proxy/ys1000/favicon.ico"><link rel="stylesheet" href="/regions/region:region-04/proxy/ys1000/main.css"><script src="/regions/region:region-04/proxy/ys1000/app.bundle.js"></script><a href="/proxy/ys1000-old/">old</a><a href="/proxy/another-app/">other</a>"#;
+        let input = "<!DOCTYPE html><link rel=\"icon\" href=\"/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/proxy/ys1000/main.css'><script src=\"/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/proxy/ys1000/form-feed.js'></script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
+        let expected = "<!DOCTYPE html><link rel=\"icon\" href=\"/regions/region:region-04/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/regions/region:region-04/proxy/ys1000/main.css'><script src=\"/regions/region:region-04/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/regions/region:region-04/proxy/ys1000/form-feed.js'></script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
-                RewriteProfile::Ys1000IndexHtml,
+                RewriteProfile::NamedProxyIndexHtml,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,
@@ -717,7 +716,7 @@ mod tests {
             assert_eq!(output, expected.as_bytes(), "split at byte {split}");
 
             let mut second_pass = build_selected_response_rewriter(
-                RewriteProfile::Ys1000IndexHtml,
+                RewriteProfile::NamedProxyIndexHtml,
                 "/regions/region:region-04",
                 "ys1000",
                 1024,

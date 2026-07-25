@@ -591,10 +591,9 @@ mod tests {
         for profile in [
             RewriteProfile::JsBundle,
             RewriteProfile::ConsoleV3,
-            RewriteProfile::Kubekey,
             RewriteProfile::KubekeyAssetJs,
+            RewriteProfile::NamedProxyIndexHtml,
             RewriteProfile::ProxyJs,
-            RewriteProfile::Ys1000IndexHtml,
         ] {
             assert!(!is_rewritable_content_type(profile, Some(&text_plain)));
         }

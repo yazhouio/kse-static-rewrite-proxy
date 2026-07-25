@@ -54,11 +54,12 @@ As a narrow compatibility exception,
 upstream `Content-Type` of `text/plain` with a supported UTF-8 charset. Other
 jsbundles and response types retain the standard text MIME allowlist.
 
-The Kubekey web installer HTML at `{basePath}/proxy/kubekey/` is also
-rewritten independently of the extension allowlist. Its fixed
-`/proxy/kubekey/` asset root becomes `{basePath}/proxy/kubekey/`. Requests for
-the resulting CSS, favicon, and other non-JavaScript assets bypass response
-rewriting.
+Named proxy index HTML at `{basePath}/proxy/{name}/` is rewritten independently
+of the extension allowlist. Canonical lowercase `href="/proxy/{name}/..."` and
+`src="/proxy/{name}/..."` attributes (with either quote style and no whitespace
+around `=`) receive `{basePath}`. This covers favicon, stylesheet, and script
+URLs without modifying similarly named attributes, other proxy roots, or
+absolute external URLs.
 
 JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
 independently of the extension allowlist. Within a selected response, the
@@ -68,10 +69,6 @@ Kubekey JavaScript below `{basePath}/proxy/kubekey/assets/` additionally
 rewrites `/kapis/kubekey.kubesphere.io` to
 `{basePath}/kapis/kubekey.kubesphere.io`. Other KAPIS roots and JavaScript
 outside the Kubekey assets directory are unchanged by this additional rule.
-
-The YS1000 index HTML at `{basePath}/proxy/ys1000/` rewrites its fixed
-`/proxy/ys1000/` resource root to `{basePath}/proxy/ys1000/`. This covers its
-favicon, stylesheet, and script URLs without affecting other named proxies.
 
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 

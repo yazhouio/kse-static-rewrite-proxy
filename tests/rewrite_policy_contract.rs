@@ -1,23 +1,28 @@
 use kse_static_rewrite_proxy::rewrite::{RewriteDecision, RewritePolicy, RewriteProfile};
 
 #[test]
-fn rewrites_the_fixed_kubekey_installer_html_path() {
+fn rewrites_named_proxy_index_html_paths() {
     let policy = RewritePolicy::for_allowlisted_extensions(
         "/regions/region:region-04",
         std::iter::empty::<&str>(),
     );
 
-    for method in ["GET", "HEAD"] {
+    for (method, name) in [
+        ("GET", "kubekey"),
+        ("HEAD", "kubekey"),
+        ("GET", "ys1000"),
+        ("HEAD", "ys1000"),
+        ("GET", "another-app"),
+        ("GET", "app:name"),
+    ] {
+        let path = format!("/regions/region:region-04/proxy/{name}/");
         assert!(matches!(
-            policy.decide(
-                method,
-                "/regions/region:region-04/proxy/kubekey/"
-            ),
+            policy.decide(method, &path),
             RewriteDecision::Rewrite {
-                profile: RewriteProfile::Kubekey,
+                profile: RewriteProfile::NamedProxyIndexHtml,
                 ref extension,
                 head_only,
-            } if extension == "kubekey" && head_only == method.eq_ignore_ascii_case("HEAD")
+            } if extension == name && head_only == method.eq_ignore_ascii_case("HEAD")
         ));
     }
 
@@ -35,33 +40,9 @@ fn rewrites_the_fixed_kubekey_installer_html_path() {
     for (method, path) in [
         ("GET", "/proxy/kubekey/"),
         ("POST", "/regions/region:region-04/proxy/kubekey/"),
-    ] {
-        assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
-    }
-}
-
-#[test]
-fn rewrites_the_fixed_ys1000_index_html_path() {
-    let policy = RewritePolicy::for_allowlisted_extensions(
-        "/regions/region:region-04",
-        std::iter::empty::<&str>(),
-    );
-
-    for method in ["GET", "HEAD"] {
-        assert!(matches!(
-            policy.decide(method, "/regions/region:region-04/proxy/ys1000/"),
-            RewriteDecision::Rewrite {
-                profile: RewriteProfile::Ys1000IndexHtml,
-                ref extension,
-                head_only,
-            } if extension == "ys1000" && head_only == method.eq_ignore_ascii_case("HEAD")
-        ));
-    }
-
-    for (method, path) in [
-        ("GET", "/proxy/ys1000/"),
         ("POST", "/regions/region:region-04/proxy/ys1000/"),
-        ("GET", "/regions/region:region-04/proxy/another-app/"),
+        ("GET", "/regions/region:region-04/proxy//"),
+        ("GET", "/regions/region:region-04/proxy/another-app/nested/"),
     ] {
         assert_eq!(policy.decide(method, path), RewriteDecision::Bypass);
     }
@@ -370,6 +351,10 @@ fn named_proxy_metrics_use_a_bounded_profile_label() {
     assert_eq!(
         policy.metrics_extension_label(RewriteProfile::ProxyJs, "arbitrary:name"),
         "proxy-js"
+    );
+    assert_eq!(
+        policy.metrics_extension_label(RewriteProfile::NamedProxyIndexHtml, "arbitrary:name"),
+        "proxy-html"
     );
 }
 
