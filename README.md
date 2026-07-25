@@ -19,6 +19,36 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 
 ## Rewrite scope
 
+### 当前重写规则统计（v26）
+
+当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
+`extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
+`RewriteProfile` 为统计口径。同一处理规则内部为了兼容不同构建产物而包含的
+多种字符串形态，不重复计数。
+
+| # | 处理规则 | 请求路径 | 响应要求 | 内容修改 |
+|---|---|---|---|---|
+| 1 | Console V3 静态资源 | `{basePath}/extensions-static/{extension}/dist/v3dist/**` | 已启用且未禁用的扩展；文件后缀为 `.js`、`.mjs`、`.css`、`.json`、`.html` 或 `.htm`；支持的 UTF-8 文本类型 | 为扩展静态资源根路径添加 `basePath`，并兼容独立 `/extensions-static/`、React Router `basename` 和相对 API URL 规范化逻辑 |
+| 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{extension}/*.js` | 已启用且未禁用的扩展；只匹配当前目录的直接 `.js` 文件，不匹配更深层文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
+| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
+| 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址 |
+| 5 | Named Proxy JavaScript | `{basePath}/proxy/{name}/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 将固定的 `/proxy/{name}` 改为 `{basePath}/proxy/{name}` |
+| 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 除 `/proxy/kubekey` 外，额外将 `/kapis/kubekey.kubesphere.io` 添加 `basePath` |
+
+公共行为：
+
+- 仅 `GET`、`HEAD` 请求参与规则匹配；`basePath` 为空时全部旁路。
+- 只有 Console V3、JSBundle 和 Frontend Index JSBundle 受
+  `enabledExtensions` / `disabledExtensions` 控制；Named Proxy 相关规则不受
+  扩展白名单控制。
+- 上游非 `200` 响应不修改。选中的响应要求使用 identity 编码，正文重写支持任意
+  HTTP 分块边界并保持幂等。
+- 由 Named Proxy HTML 规则选中的候选响应，如果最终 Content-Type 不是
+  HTML/XHTML，则不会返回 502，并保留 Range 与条件缓存请求语义；图片、字体、
+  视频等二进制资源原样旁路。
+- Named Proxy JavaScript 的优先级高于通用 HTML；Kubekey assets JavaScript
+  的优先级又高于普通 Named Proxy JavaScript。
+
 Console V3 responses are eligible only when all conditions hold:
 
 - Request method is `GET` or `HEAD`.
@@ -51,8 +81,9 @@ The remainder of each matching template-string URL is preserved, whether it cont
 
 As a narrow compatibility exception,
 `{basePath}/jsbundles/*-frontend/dist/*-frontend/index.js` also accepts an
-upstream `Content-Type` of `text/plain` with a supported UTF-8 charset. Other
-jsbundles and response types retain the standard text MIME allowlist.
+upstream `Content-Type` of `text/plain` without a charset, or with a supported
+UTF-8 charset. Other jsbundles and response types retain the standard text MIME
+allowlist.
 
 Named proxy HTML at `{basePath}/proxy/{name}/` and any path below it is rewritten
 independently of the extension allowlist. Canonical lowercase
