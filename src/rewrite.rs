@@ -2,9 +2,10 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v28";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v29";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
+const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
 
@@ -273,7 +274,10 @@ pub(crate) fn build_selected_response_rewriter(
             let kapis_replacement = [base_path.as_bytes(), kapis_source.as_slice()].concat();
             StreamingRewritePipeline::new_with_exact(
                 [(kapis_source, kapis_replacement)],
-                [kubekey_proxy_exact_rule(base_path)],
+                [
+                    kubekey_proxy_exact_rule(base_path),
+                    kubekey_legacy_root_rule(base_path),
+                ],
                 max_bytes,
             )
         }
@@ -297,21 +301,23 @@ pub(crate) fn build_selected_response_rewriter(
         }
         RewriteProfile::NamedProxyHtml => {
             let proxy_root = format!("{NAMED_PROXY_ROOT}{extension}/");
-            let attribute_rules =
-                [" ", "\t", "\r", "\n", "\x0C"]
-                    .into_iter()
-                    .flat_map(|boundary| {
-                        ["href=\"", "href='", "src=\"", "src='"].map(|attribute| {
-                            (
-                                format!("{boundary}{attribute}{proxy_root}").into_bytes(),
-                                format!("{boundary}{attribute}{base_path}{proxy_root}")
-                                    .into_bytes(),
-                            )
-                        })
-                    });
+            let mut exact_rules: Vec<_> = [" ", "\t", "\r", "\n", "\x0C"]
+                .into_iter()
+                .flat_map(|boundary| {
+                    ["href=\"", "href='", "src=\"", "src='"].map(|attribute| {
+                        (
+                            format!("{boundary}{attribute}{proxy_root}").into_bytes(),
+                            format!("{boundary}{attribute}{base_path}{proxy_root}").into_bytes(),
+                        )
+                    })
+                })
+                .collect();
+            if extension == KUBEKEY_NAME {
+                exact_rules.push(kubekey_legacy_root_rule(base_path));
+            }
             StreamingRewritePipeline::new_with_exact(
                 std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
-                attribute_rules,
+                exact_rules,
                 max_bytes,
             )
         }
@@ -323,6 +329,13 @@ fn kubekey_proxy_exact_rule(base_path: &str) -> (Vec<u8>, Vec<u8>) {
     (
         format!("\"{proxy_path}\"").into_bytes(),
         format!("\"{base_path}{proxy_path}\"").into_bytes(),
+    )
+}
+
+fn kubekey_legacy_root_rule(base_path: &str) -> (Vec<u8>, Vec<u8>) {
+    (
+        KUBEKEY_LEGACY_ROOT.as_bytes().to_vec(),
+        base_path.as_bytes().to_vec(),
     )
 }
 
@@ -588,8 +601,8 @@ mod tests {
 
     #[test]
     fn kubekey_rewriter_prefixes_asset_urls_across_chunk_boundaries_idempotently() {
-        let input = r#"<!doctype html><link rel="icon" href="/proxy/kubekey/favicon.svg"><script src="/proxy/kubekey/assets/index.js"></script><link href="/proxy/kubekey/assets/index.css"><a href="/other">other</a>"#;
-        let expected = r#"<!doctype html><link rel="icon" href="/regions/region:region-04/proxy/kubekey/favicon.svg"><script src="/regions/region:region-04/proxy/kubekey/assets/index.js"></script><link href="/regions/region:region-04/proxy/kubekey/assets/index.css"><a href="/other">other</a>"#;
+        let input = r#"<!doctype html><link rel="icon" href="/proxy/kubekey/favicon.svg"><script src="/proxy/kubekey/assets/index.js"></script><link href="/proxy/kubekey/assets/index.css"><script>window.legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";window.api="/57516e69-2cb0-4d48-a8a8-2833cfff87a9/api"</script><a href="/other">other</a>"#;
+        let expected = r#"<!doctype html><link rel="icon" href="/regions/region:region-04/proxy/kubekey/favicon.svg"><script src="/regions/region:region-04/proxy/kubekey/assets/index.js"></script><link href="/regions/region:region-04/proxy/kubekey/assets/index.css"><script>window.legacy="/regions/region:region-04";window.api="/regions/region:region-04/api"</script><a href="/other">other</a>"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
@@ -629,8 +642,8 @@ mod tests {
 
     #[test]
     fn kubekey_proxy_js_rewriter_only_prefixes_exact_double_quoted_root_idempotently() {
-        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
+        let input = r#"const root="/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const asset="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const single='/proxy/kubekey';const longer="/proxy/kubekey-old";const other="/proxy/another-app";"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
@@ -687,8 +700,8 @@ mod tests {
 
     #[test]
     fn kubekey_asset_js_rewriter_prefixes_proxy_and_kapis_roots_idempotently() {
-        let input = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
-        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let input = r#"const root="/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/57516e69-2cb0-4d48-a8a8-2833cfff87a9";const endpoint="/57516e69-2cb0-4d48-a8a8-2833cfff87a9/api";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let expected = r#"const root="/regions/region:region-04/proxy/kubekey";const ui="/proxy/kubekey/assets/data.json";const legacy="/regions/region:region-04";const endpoint="/regions/region:region-04/api";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
@@ -728,8 +741,8 @@ mod tests {
 
     #[test]
     fn ys1000_index_html_rewriter_prefixes_resource_urls_idempotently() {
-        let input = "<!DOCTYPE html><link rel=\"icon\" href=\"/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/proxy/ys1000/main.css'><script src=\"/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/proxy/ys1000/form-feed.js'></script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
-        let expected = "<!DOCTYPE html><link rel=\"icon\" href=\"/regions/region:region-04/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/regions/region:region-04/proxy/ys1000/main.css'><script src=\"/regions/region:region-04/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/regions/region:region-04/proxy/ys1000/form-feed.js'></script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
+        let input = "<!DOCTYPE html><link rel=\"icon\" href=\"/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/proxy/ys1000/main.css'><script src=\"/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/proxy/ys1000/form-feed.js'></script><script>window.legacy=\"/57516e69-2cb0-4d48-a8a8-2833cfff87a9\"</script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
+        let expected = "<!DOCTYPE html><link rel=\"icon\" href=\"/regions/region:region-04/proxy/ys1000/favicon.ico\"><link rel=\"stylesheet\"\n\thref='/regions/region:region-04/proxy/ys1000/main.css'><script src=\"/regions/region:region-04/proxy/ys1000/app.bundle.js\"></script><script\x0Csrc='/regions/region:region-04/proxy/ys1000/form-feed.js'></script><script>window.legacy=\"/57516e69-2cb0-4d48-a8a8-2833cfff87a9\"</script><img data-src=\"/proxy/ys1000/lazy.png\"><svg xlink:href=\"/proxy/ys1000/icon.svg\"></svg><script src='https://cdn.example/proxy/ys1000/external.js'></script><a href=\"/proxy/ys1000-old/\">old</a><a href=\"/proxy/another-app/\">other</a>";
 
         for split in 0..=input.len() {
             let mut pipeline = build_selected_response_rewriter(
