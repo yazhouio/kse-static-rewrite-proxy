@@ -2,8 +2,9 @@ use std::collections::HashSet;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v22";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v23";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
+const KUBEKEY_KAPIS_PATH: &str = "/kapis/kubekey.kubesphere.io";
 const KUBEKEY_PROXY_PATH: &str = "/proxy/kubekey/";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
 
@@ -13,6 +14,7 @@ pub enum RewriteProfile {
     FrontendIndexJsBundle,
     JsBundle,
     Kubekey,
+    KubekeyAssetJs,
     ProxyJs,
 }
 
@@ -119,7 +121,11 @@ impl RewritePolicy {
             && asset_path.ends_with(".js")
         {
             return RewriteDecision::Rewrite {
-                profile: RewriteProfile::ProxyJs,
+                profile: if name == "kubekey" && asset_path.starts_with("assets/") {
+                    RewriteProfile::KubekeyAssetJs
+                } else {
+                    RewriteProfile::ProxyJs
+                },
                 extension: name.to_owned(),
                 head_only: method.eq_ignore_ascii_case("HEAD"),
             };
@@ -178,6 +184,7 @@ impl RewritePolicy {
         match profile {
             RewriteProfile::ProxyJs => "proxy-js",
             RewriteProfile::Kubekey => "kubekey",
+            RewriteProfile::KubekeyAssetJs => "kubekey-assets",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
@@ -258,6 +265,19 @@ pub(crate) fn build_selected_response_rewriter(
             )],
             max_bytes,
         ),
+        RewriteProfile::KubekeyAssetJs => {
+            let proxy_source = KUBEKEY_PROXY_PATH.trim_end_matches('/').as_bytes().to_vec();
+            let kapis_source = KUBEKEY_KAPIS_PATH.as_bytes().to_vec();
+            let proxy_replacement = [base_path.as_bytes(), proxy_source.as_slice()].concat();
+            let kapis_replacement = [base_path.as_bytes(), kapis_source.as_slice()].concat();
+            StreamingRewritePipeline::new(
+                [
+                    (proxy_source, proxy_replacement),
+                    (kapis_source, kapis_replacement),
+                ],
+                max_bytes,
+            )
+        }
         RewriteProfile::ProxyJs => {
             let source = format!("{NAMED_PROXY_ROOT}{extension}");
             StreamingRewritePipeline::new(
@@ -603,6 +623,47 @@ mod tests {
                 1024,
             )
             .expect("valid rewrite rule");
+            let mut idempotent_output = second_pass.push(&output).expect("second pass");
+            idempotent_output.extend(second_pass.finish().expect("finish second pass"));
+            assert_eq!(
+                idempotent_output,
+                expected.as_bytes(),
+                "second pass after byte {split}"
+            );
+        }
+    }
+
+    #[test]
+    fn kubekey_asset_js_rewriter_prefixes_proxy_and_kapis_roots_idempotently() {
+        let input = r#"const ui="/proxy/kubekey/assets/data.json";const api="/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+        let expected = r#"const ui="/regions/region:region-04/proxy/kubekey/assets/data.json";const api="/regions/region:region-04/kapis/kubekey.kubesphere.io/v1alpha1/install";const other="/kapis/another.kubesphere.io";"#;
+
+        for split in 0..=input.len() {
+            let mut pipeline = build_selected_response_rewriter(
+                RewriteProfile::KubekeyAssetJs,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rules");
+            let mut output = pipeline
+                .push(&input.as_bytes()[..split])
+                .expect("first chunk");
+            output.extend(
+                pipeline
+                    .push(&input.as_bytes()[split..])
+                    .expect("second chunk"),
+            );
+            output.extend(pipeline.finish().expect("finish stream"));
+            assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+
+            let mut second_pass = build_selected_response_rewriter(
+                RewriteProfile::KubekeyAssetJs,
+                "/regions/region:region-04",
+                "kubekey",
+                1024,
+            )
+            .expect("valid rewrite rules");
             let mut idempotent_output = second_pass.push(&output).expect("second pass");
             idempotent_output.extend(second_pass.finish().expect("finish second pass"));
             assert_eq!(

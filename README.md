@@ -64,6 +64,11 @@ JavaScript responses under `{basePath}/proxy/{name}/**/*.js` are rewritten
 independently of the extension allowlist. Within a selected response, the
 matching fixed `/proxy/{name}` root becomes `{basePath}/proxy/{name}`.
 
+Kubekey JavaScript below `{basePath}/proxy/kubekey/assets/` additionally
+rewrites `/kapis/kubekey.kubesphere.io` to
+`{basePath}/kapis/kubekey.kubesphere.io`. Other KAPIS roots and JavaScript
+outside the Kubekey assets directory are unchanged by this additional rule.
+
 The operation is idempotent across arbitrary HTTP chunk boundaries. Fonts, images, and all other binary assets bypass the rewrite and retain their normal upstream compression.
 
 For eligible text assets the sidecar asks the BFF for an identity response, performs the bounded literal rewrite, then lets Pingora negotiate downstream gzip, Brotli, or Zstandard compression from the browser's original `Accept-Encoding` header.

@@ -21,6 +21,17 @@ fn rewrites_the_fixed_kubekey_installer_html_path() {
         ));
     }
 
+    assert!(matches!(
+        policy.decide(
+            "GET",
+            "/regions/region:region-04/proxy/kubekey/assets2/index.js"
+        ),
+        RewriteDecision::Rewrite {
+            profile: RewriteProfile::ProxyJs,
+            ..
+        }
+    ));
+
     for (method, path) in [
         ("GET", "/proxy/kubekey/"),
         ("POST", "/regions/region:region-04/proxy/kubekey/"),
@@ -40,11 +51,6 @@ fn rewrites_javascript_below_named_proxy_paths() {
         (
             "GET",
             "/regions/region:region-04/proxy/kubekey/index.js",
-            "kubekey",
-        ),
-        (
-            "HEAD",
-            "/regions/region:region-04/proxy/kubekey/assets/chunks/index.js",
             "kubekey",
         ),
         (
@@ -70,6 +76,20 @@ fn rewrites_javascript_below_named_proxy_paths() {
                 ref extension,
                 head_only,
             } if extension == expected_name && head_only == method.eq_ignore_ascii_case("HEAD")
+        ));
+    }
+
+    for method in ["GET", "HEAD"] {
+        assert!(matches!(
+            policy.decide(
+                method,
+                "/regions/region:region-04/proxy/kubekey/assets/chunks/index.js"
+            ),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::KubekeyAssetJs,
+                ref extension,
+                head_only,
+            } if extension == "kubekey" && head_only == method.eq_ignore_ascii_case("HEAD")
         ));
     }
 
