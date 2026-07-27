@@ -27,9 +27,9 @@ Health and metrics use a separate admin listener on `9090`. The Console Service 
 ### API request path compatibility
 
 Before forwarding a request, the sidecar prefixes `basePath` when the path does
-not already start with that complete path prefix and contains `/kapis/` or
-`/apis/`. The query string is preserved. If `basePath` is empty, the request is
-unchanged.
+not already start with that complete path prefix and contains `/api/`, `/apis/`,
+`/kapi/`, or `/kapis/`. The query string is preserved. If `basePath` is empty,
+the request is unchanged.
 
 ```text
 /apis/apps/v1/deployments?limit=20

@@ -31,6 +31,7 @@ use crate::rewrite::{
 
 const COMPRESSION_LEVEL: u32 = 6;
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const API_PATH_MARKERS: [&str; 4] = ["/api/", "/apis/", "/kapi/", "/kapis/"];
 
 static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -153,7 +154,7 @@ fn api_uri_with_base_path(
             .is_some_and(|suffix| suffix.starts_with('/'));
     if base_path.is_empty()
         || already_scoped
-        || !(path.contains("/kapis/") || path.contains("/apis/"))
+        || !API_PATH_MARKERS.iter().any(|marker| path.contains(marker))
     {
         return Ok(None);
     }
@@ -632,6 +633,14 @@ mod tests {
                 "/assets/apis/client.js",
                 "/regions/region:shenzhen/assets/apis/client.js",
             ),
+            (
+                "/api/v1/namespaces?limit=20",
+                "/regions/region:shenzhen/api/v1/namespaces?limit=20",
+            ),
+            (
+                "/clusters/host/kapi/v1/resources",
+                "/regions/region:shenzhen/clusters/host/kapi/v1/resources",
+            ),
         ] {
             let incoming: http::Uri = incoming.parse().unwrap();
 
@@ -650,10 +659,17 @@ mod tests {
         for incoming in [
             "/regions/region:shenzhen/kapis/tenant.kubesphere.io/v1alpha2/workspaces",
             "/regions/region:shenzhen/apis/apps/v1/deployments",
+            "/regions/region:shenzhen/api/v1/namespaces",
+            "/regions/region:shenzhen/kapi/v1/resources",
             "/regions/region:shenzhen",
             "/apis",
             "/kapis",
-            "/api/v1/namespaces",
+            "/api",
+            "/kapi",
+            "/apiary/v1/resources",
+            "/apisfoo/v1/resources",
+            "/mykapi/v1/resources",
+            "/kapisfoo/v1/resources",
         ] {
             let incoming: http::Uri = incoming.parse().unwrap();
 

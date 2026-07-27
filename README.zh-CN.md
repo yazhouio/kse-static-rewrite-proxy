@@ -26,9 +26,9 @@ Console 的通配 Ingress 路由无法访问或遮蔽管理端点。
 
 ### API 请求路径兼容
 
-请求转发到上游前，如果路径尚未以完整的 `basePath` 开头，并且包含 `/kapis/`
-或 `/apis/`，Sidecar 会在路径前添加 `basePath`。查询参数保持不变；
-`basePath` 为空时不修改请求。
+请求转发到上游前，如果路径尚未以完整的 `basePath` 开头，并且包含 `/api/`、
+`/apis/`、`/kapi/` 或 `/kapis/`，Sidecar 会在路径前添加 `basePath`。
+查询参数保持不变；`basePath` 为空时不修改请求。
 
 ```text
 /apis/apps/v1/deployments?limit=20
