@@ -6,11 +6,14 @@ use serde_json::Value;
 
 use crate::literal::{RewriteError, StreamingRewritePipeline};
 
-pub(crate) const REWRITE_RULE_VERSION: &str = "v33";
+pub(crate) const REWRITE_RULE_VERSION: &str = "v34";
 pub(crate) const ALL_EXTENSIONS_WILDCARD: &str = "*";
 const KUBEKEY_LEGACY_ROOT: &str = "/57516e69-2cb0-4d48-a8a8-2833cfff87a9";
 const KUBEKEY_NAME: &str = "kubekey";
 const NAMED_PROXY_ROOT: &str = "/proxy/";
+const YS1000_NAME: &str = "ys1000";
+const YS1000_FRONTEND_NAME: &str = "ys1000-frontend";
+const YS1000_FRONTEND_INDEX_PATH: &str = "ys1000-frontend/index.js";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -53,6 +56,7 @@ impl TryFrom<u8> for RewriteRule {
 pub enum RewriteProfile {
     ConsoleV3,
     FrontendIndexJsBundle,
+    Ys1000FrontendIndexJsBundle,
     JsBundle,
     KubekeyAssetJs,
     NamedProxyHtml,
@@ -214,9 +218,15 @@ impl RewritePolicy {
             && asset_path.ends_with(".js")
         {
             let is_frontend_index = extension.ends_with("-frontend") && asset_path == "index.js";
+            let is_ys1000_frontend_index = extension == YS1000_FRONTEND_NAME
+                && distribution_path == YS1000_FRONTEND_INDEX_PATH;
             let profile =
                 if is_frontend_index && self.is_rule_enabled(RewriteRule::FrontendIndexJsBundle) {
-                    Some(RewriteProfile::FrontendIndexJsBundle)
+                    if is_ys1000_frontend_index {
+                        Some(RewriteProfile::Ys1000FrontendIndexJsBundle)
+                    } else {
+                        Some(RewriteProfile::FrontendIndexJsBundle)
+                    }
                 } else if self.is_rule_enabled(RewriteRule::JsBundle) {
                     Some(RewriteProfile::JsBundle)
                 } else {
@@ -266,6 +276,7 @@ impl RewritePolicy {
             RewriteProfile::Ys1000Html => "ys1000-html",
             RewriteProfile::ConsoleV3
             | RewriteProfile::FrontendIndexJsBundle
+            | RewriteProfile::Ys1000FrontendIndexJsBundle
             | RewriteProfile::JsBundle => match self.extensions {
                 ExtensionMatcher::All => ALL_EXTENSIONS_WILDCARD,
                 ExtensionMatcher::Allowlist(_) => extension,
@@ -357,6 +368,20 @@ pub(crate) fn build_selected_response_rewriter(
                 format!("{}/", base_path.trim_start_matches('/')),
                 max_bytes,
             )
+        }
+        RewriteProfile::Ys1000FrontendIndexJsBundle => {
+            let exact_rules = ['"', '\''].map(|quote| {
+                (
+                    format!("{quote}{NAMED_PROXY_ROOT}{YS1000_NAME}/{quote}"),
+                    format!("{quote}{base_path}{NAMED_PROXY_ROOT}{YS1000_NAME}/{quote}"),
+                )
+            });
+            StreamingRewritePipeline::new_with_appended_suffix(
+                b"`//${window.location.host}/",
+                format!("{}/", base_path.trim_start_matches('/')),
+                max_bytes,
+            )?
+            .with_exact_rules(exact_rules)
         }
         RewriteProfile::KubekeyAssetJs => StreamingRewritePipeline::new_with_exact(
             std::iter::empty::<(Vec<u8>, Vec<u8>)>(),
@@ -728,6 +753,48 @@ mod tests {
                 expected.as_bytes(),
                 "second pass split at byte {split}"
             );
+        }
+    }
+
+    #[test]
+    fn ys1000_frontend_index_prefixes_proxy_root_idempotently() {
+        let input = concat!(
+            r#"const api="/proxy/ys1000/";"#,
+            r#"const scoped="/regions/region:region-04/proxy/ys1000/";"#,
+            r#"const single='/proxy/ys1000/';"#,
+            r#"const embedded="/foo/proxy/ys1000/";"#,
+            r#"/* /proxy/ys1000/ */"#,
+            r#"const other="/proxy/another-app/";"#
+        );
+        let expected = concat!(
+            r#"const api="/regions/region:region-04/proxy/ys1000/";"#,
+            r#"const scoped="/regions/region:region-04/proxy/ys1000/";"#,
+            r#"const single='/regions/region:region-04/proxy/ys1000/';"#,
+            r#"const embedded="/foo/proxy/ys1000/";"#,
+            r#"/* /proxy/ys1000/ */"#,
+            r#"const other="/proxy/another-app/";"#
+        );
+
+        for source in [input, expected] {
+            for split in 0..=source.len() {
+                let mut pipeline = build_selected_response_rewriter(
+                    RewriteProfile::Ys1000FrontendIndexJsBundle,
+                    "/regions/region:region-04",
+                    "ys1000-frontend",
+                    1024,
+                )
+                .expect("valid rewrite rules");
+                let mut output = pipeline
+                    .push(&source.as_bytes()[..split])
+                    .expect("first chunk");
+                output.extend(
+                    pipeline
+                        .push(&source.as_bytes()[split..])
+                        .expect("second chunk"),
+                );
+                output.extend(pipeline.finish().expect("finish stream"));
+                assert_eq!(output, expected.as_bytes(), "split at byte {split}");
+            }
         }
     }
 

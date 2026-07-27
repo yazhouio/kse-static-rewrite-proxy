@@ -57,13 +57,7 @@ impl StreamingRewritePipeline {
         S: AsRef<[u8]>,
         R: AsRef<[u8]>,
     {
-        let rewriters = rules
-            .into_iter()
-            .map(|(source, replacement)| {
-                StreamingLiteralRewriter::new(source, replacement, usize::MAX)
-                    .map(StreamingRewriter::Literal)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let rewriters = Self::prefix_literal_rewriters(rules)?;
         Self::from_rewriters(rewriters, max_bytes)
     }
 
@@ -80,22 +74,8 @@ impl StreamingRewritePipeline {
         ES: AsRef<[u8]>,
         ER: AsRef<[u8]>,
     {
-        let mut rewriters = prefix_rules
-            .into_iter()
-            .map(|(source, replacement)| {
-                StreamingLiteralRewriter::new(source, replacement, usize::MAX)
-                    .map(StreamingRewriter::Literal)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        rewriters.extend(
-            exact_rules
-                .into_iter()
-                .map(|(source, replacement)| {
-                    StreamingLiteralRewriter::new_exact(source, replacement, usize::MAX)
-                        .map(StreamingRewriter::Literal)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+        let mut rewriters = Self::prefix_literal_rewriters(prefix_rules)?;
+        rewriters.extend(Self::exact_literal_rewriters(exact_rules)?);
         Self::from_rewriters(rewriters, max_bytes)
     }
 
@@ -158,6 +138,16 @@ impl StreamingRewritePipeline {
         Self::from_rewriters(vec![StreamingRewriter::Literal(rewriter)], max_bytes)
     }
 
+    pub(crate) fn with_exact_rules<I, S, R>(mut self, rules: I) -> Result<Self, RewriteError>
+    where
+        I: IntoIterator<Item = (S, R)>,
+        S: AsRef<[u8]>,
+        R: AsRef<[u8]>,
+    {
+        self.rewriters.extend(Self::exact_literal_rewriters(rules)?);
+        Ok(self)
+    }
+
     pub(crate) fn with_identifier_template_patterns<II, IP, IS, IT>(
         mut self,
         identifier_rules: II,
@@ -206,6 +196,36 @@ impl StreamingRewritePipeline {
             total_bytes: 0,
             finished: false,
         })
+    }
+
+    fn prefix_literal_rewriters<I, S, R>(rules: I) -> Result<Vec<StreamingRewriter>, RewriteError>
+    where
+        I: IntoIterator<Item = (S, R)>,
+        S: AsRef<[u8]>,
+        R: AsRef<[u8]>,
+    {
+        rules
+            .into_iter()
+            .map(|(source, replacement)| {
+                StreamingLiteralRewriter::new(source, replacement, usize::MAX)
+                    .map(StreamingRewriter::Literal)
+            })
+            .collect()
+    }
+
+    fn exact_literal_rewriters<I, S, R>(rules: I) -> Result<Vec<StreamingRewriter>, RewriteError>
+    where
+        I: IntoIterator<Item = (S, R)>,
+        S: AsRef<[u8]>,
+        R: AsRef<[u8]>,
+    {
+        rules
+            .into_iter()
+            .map(|(source, replacement)| {
+                StreamingLiteralRewriter::new_exact(source, replacement, usize::MAX)
+                    .map(StreamingRewriter::Literal)
+            })
+            .collect()
     }
 
     pub fn push(&mut self, input: &[u8]) -> Result<Vec<u8>, RewriteError> {

@@ -38,7 +38,7 @@ Console 的通配 Ingress 路由无法访问或遮蔽管理端点。
 
 ## 重写范围
 
-### 当前重写规则统计（v33）
+### 当前重写规则统计（v34）
 
 当前共有 **3 个顶层请求路径根、6 个响应处理规则**。请求路径根分别是
 `extensions-static`、`jsbundles` 和 `proxy`；响应处理规则以代码中的
@@ -49,7 +49,7 @@ Console 的通配 Ingress 路由无法访问或遮蔽管理端点。
 |---|---|---|---|---|
 | 1 | Console V3 静态资源 | `{basePath}/extensions-static/{extension}/dist/v3dist/**` | 已启用且未禁用的扩展；文件后缀为 `.js`、`.mjs`、`.css`、`.json`、`.html` 或 `.htm`；支持的 UTF-8 文本类型 | 为扩展静态资源根路径添加 `basePath`，并兼容独立 `/extensions-static/`、React Router `basename` 和相对 API URL 规范化逻辑 |
 | 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` | 已启用且未禁用的扩展；`distribution` 等于 `extension`，或外层为 `{name}-frontend` 时等于 `{name}`；只匹配当前目录的直接 `.js` 文件 | 将 `` `//${window.location.host}/ `` 改为 `` `//${window.location.host}{basePath}/ `` |
-| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` 或 `.../dist/{name}/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；这是独立的 Content-Type 兼容规则 |
+| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` 或 `.../dist/{name}/index.js` | 已启用且未禁用的扩展；除标准 JavaScript 类型外，额外兼容未声明 charset 或 charset 为 UTF-8/UTF8 的 `text/plain` | 内容修改与 JSBundle 相同；仅在完整的 `ys1000-frontend/dist/ys1000-frontend/index.js` 路径上，为使用单双引号的精确 `/proxy/ys1000/` 字符串添加 `basePath` |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | 将小写、等号两侧无空白的 `href="/proxy/{name}/..."`、`src="/proxy/{name}/..."`（单双引号均可）改为带 `basePath` 的地址；Kubekey HTML 还会将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
 | 5 | Ys1000 MIG Meta HTML | `{basePath}/proxy/ys1000/` 及其任意子路径 | 仅处理 `text/html` 或 `application/xhtml+xml`；其他类型原样旁路 | Base64 解码 `window._mig_meta` 中的 JSON，将顶层 `baseURI` 从 `/proxy/ys1000` 改为 `{basePath}/proxy/ys1000`，再按原位置重新编码；同时继承规则 4 的 HTML 属性修改 |
 | 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | 标准 UTF-8 文本类型；不受扩展白名单控制 | 仅将固定旧根路径 `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` 替换为 `basePath` |
@@ -136,8 +136,12 @@ JavaScript 文件；`{extension}` 必须启用且未禁用。`distribution` 支�
 
 匹配已启用且未禁用的 `{name}-frontend` 外层扩展，其 dist 目录可以是完整的
 `{name}-frontend`，也可以是去掉后缀的 `{name}`，文件名必须是 `index.js`。
-内容修改与 JSBundle 相同。它额外接受 `text/plain`：可以不声明 charset；如果
-声明，只接受 `utf-8` 或 `utf8`。
+内容修改与 JSBundle 相同。对于完整的
+`ys1000-frontend/dist/ys1000-frontend/index.js` 路径，还会为精确字符串
+`"/proxy/ys1000/"` 和 `'/proxy/ys1000/'` 添加 `basePath`；裸文本以及嵌在更长
+路径中的片段保持不变。较短的 `dist/ys1000/index.js` 变体只保留通用 JSBundle
+修改。它额外接受 `text/plain`：可以不声明 charset；如果声明，只接受 `utf-8`
+或 `utf8`。
 
 #### 4. Named Proxy HTML
 
@@ -321,7 +325,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v33","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v34","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 该响应使用 `Cache-Control: no-store`。CI 注入完整 Git commit SHA；本地构建在

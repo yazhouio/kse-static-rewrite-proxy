@@ -489,8 +489,10 @@ fn is_rewritable_content_type(profile: RewriteProfile, value: Option<&HeaderValu
     };
     let mut parts = value.split(';').map(str::trim);
     let media_type = parts.next().unwrap_or_default().to_ascii_lowercase();
-    let media_type_allowed = (profile == RewriteProfile::FrontendIndexJsBundle
-        && media_type == "text/plain")
+    let media_type_allowed = (matches!(
+        profile,
+        RewriteProfile::FrontendIndexJsBundle | RewriteProfile::Ys1000FrontendIndexJsBundle
+    ) && media_type == "text/plain")
         || if selects_html_by_response_content_type(profile) {
             matches!(media_type.as_str(), "text/html" | "application/xhtml+xml")
         } else {
@@ -721,6 +723,10 @@ mod tests {
             RewriteProfile::FrontendIndexJsBundle,
             Some(&text_plain)
         ));
+        assert!(is_rewritable_content_type(
+            RewriteProfile::Ys1000FrontendIndexJsBundle,
+            Some(&text_plain)
+        ));
         for profile in [
             RewriteProfile::JsBundle,
             RewriteProfile::ConsoleV3,
@@ -743,6 +749,7 @@ mod tests {
         for profile in [
             RewriteProfile::ConsoleV3,
             RewriteProfile::FrontendIndexJsBundle,
+            RewriteProfile::Ys1000FrontendIndexJsBundle,
             RewriteProfile::JsBundle,
             RewriteProfile::KubekeyAssetJs,
         ] {

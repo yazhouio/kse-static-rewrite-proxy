@@ -39,7 +39,7 @@ unchanged.
 
 ## Rewrite scope
 
-### Rewrite rule summary (v33)
+### Rewrite rule summary (v34)
 
 There are **3 top-level request path roots and 6 response rewrite rules**. The
 request roots are `extensions-static`, `jsbundles`, and `proxy`. Response rules
@@ -51,7 +51,7 @@ separately.
 |---|---|---|---|---|
 | 1 | Console V3 static assets | `{basePath}/extensions-static/{extension}/dist/v3dist/**` | Enabled and not disabled extension; filename ends in `.js`, `.mjs`, `.css`, `.json`, `.html`, or `.htm`; supported UTF-8 text type | Prefix extension static roots with `basePath`, including standalone `/extensions-static/`, React Router `basename`, and relative API URL normalization compatibility |
 | 2 | JSBundle | `{basePath}/jsbundles/{extension}/dist/{distribution}/*.js` | Enabled and not disabled extension; `distribution` equals `extension`, or equals `{name}` when the outer extension is `{name}-frontend`; only direct `.js` files | Replace `` `//${window.location.host}/ `` with `` `//${window.location.host}{basePath}/ `` |
-| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` or `.../dist/{name}/index.js` | Enabled and not disabled extension; additionally accepts `text/plain` with no charset or UTF-8/UTF8 charset | Same content rewrite as JSBundle; separate rule for Content-Type compatibility |
+| 3 | Frontend Index JSBundle | `{basePath}/jsbundles/{name}-frontend/dist/{name}-frontend/index.js` or `.../dist/{name}/index.js` | Enabled and not disabled extension; additionally accepts `text/plain` with no charset or UTF-8/UTF8 charset | Same content rewrite as JSBundle; on the full `ys1000-frontend/dist/ys1000-frontend/index.js` path, also prefix exact single- or double-quoted `/proxy/ys1000/` strings with `basePath` |
 | 4 | Named Proxy HTML | `{basePath}/proxy/{name}/` and any descendant path | Only `text/html` or `application/xhtml+xml`; other types bypass unchanged | Prefix lowercase, tightly formatted `href="/proxy/{name}/..."` and `src="/proxy/{name}/..."` attributes with `basePath`; Kubekey HTML also replaces the fixed legacy root `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` with `basePath` |
 | 5 | Ys1000 MIG Meta HTML | `{basePath}/proxy/ys1000/` and any descendant path | Only `text/html` or `application/xhtml+xml`; other types bypass unchanged | Base64-decode the JSON in `window._mig_meta`, change top-level `baseURI` from `/proxy/ys1000` to `{basePath}/proxy/ys1000`, re-encode it in place, and include rule 4's HTML attribute rewrites |
 | 6 | Kubekey Assets JavaScript | `{basePath}/proxy/kubekey/assets/**/*.js` | Supported UTF-8 text type; not controlled by the extension allowlist | Replace only the fixed legacy root `/57516e69-2cb0-4d48-a8a8-2833cfff87a9` with `basePath` |
@@ -146,8 +146,12 @@ not prefixed again.
 Matches an enabled and not disabled `{name}-frontend` outer extension. Its dist
 directory may be the full `{name}-frontend` or `{name}` without the suffix, and
 the filename must be `index.js`. The content rewrite is the same as JSBundle.
-It additionally accepts `text/plain` with no charset, or with a charset of
-`utf-8` or `utf8`.
+For the full `ys1000-frontend/dist/ys1000-frontend/index.js` path, it
+additionally prefixes the exact strings `"/proxy/ys1000/"` and
+`'/proxy/ys1000/'` with `basePath`. Unquoted text and occurrences embedded in
+longer paths remain unchanged. The shorter `dist/ys1000/index.js` variant keeps
+the generic JSBundle rewrite only. It accepts `text/plain` with no charset, or
+with a charset of `utf-8` or `utf8`.
 
 #### 4. Named Proxy HTML
 
@@ -345,7 +349,7 @@ wget -qO- http://127.0.0.1:9090/version
 ```
 
 ```json
-{"packageVersion":"0.1.0","rewriteRuleVersion":"v33","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
+{"packageVersion":"0.1.0","rewriteRuleVersion":"v34","gitCommit":"0123456789abcdef0123456789abcdef01234567"}
 ```
 
 The response uses `Cache-Control: no-store`. CI injects the full Git commit SHA.

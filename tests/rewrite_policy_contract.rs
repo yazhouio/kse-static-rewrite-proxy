@@ -18,7 +18,7 @@ fn enables_each_numbered_rule_independently() {
         (
             RewriteRule::FrontendIndexJsBundle,
             "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js",
-            RewriteProfile::FrontendIndexJsBundle,
+            RewriteProfile::Ys1000FrontendIndexJsBundle,
         ),
         (
             RewriteRule::NamedProxyHtml,
@@ -276,6 +276,20 @@ fn rewrites_only_configured_direct_javascript_bundles() {
             policy.decide(
                 method,
                 "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000-frontend/index.js"
+            ),
+            RewriteDecision::Rewrite {
+                profile: RewriteProfile::Ys1000FrontendIndexJsBundle,
+                ref extension,
+                ..
+            } if extension == "ys1000-frontend"
+        ));
+    }
+
+    for method in ["GET", "HEAD"] {
+        assert!(matches!(
+            policy.decide(
+                method,
+                "/regions/region:shenzhen/jsbundles/ys1000-frontend/dist/ys1000/index.js"
             ),
             RewriteDecision::Rewrite {
                 profile: RewriteProfile::FrontendIndexJsBundle,
