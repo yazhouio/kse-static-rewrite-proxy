@@ -2,8 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-这是一个为 KSE Console 提供的临时、可独立部署的 Pingora sidecar。它将所有
-Console 请求原样转发到 BFF，仅对已配置扩展的静态资源执行范围严格受限的流式重写。
+这是一个为 KSE Console 提供的临时、可独立部署的 Pingora sidecar。它将 Console
+请求转发到 BFF，为缺少 `basePath` 的 API 请求路径补齐前缀，并仅对已配置扩展的
+静态资源执行范围严格受限的流式重写。
 
 ## 请求流程
 
@@ -17,10 +18,23 @@ Pingora sidecar :8080 ----> KSE Console BFF 127.0.0.1:8000
 ```
 
 Console Service 必须指向 sidecar 的 `8080` 端口；BFF 仍是同一 Pod 内部的上游。
-Sidecar 保留请求路径、Host、Cookie、登录/登出行为、API、WebSocket、SSE 和上传。
+除下述 API 路径兼容规则外，Sidecar 保留请求路径、Host、Cookie、登录/登出行为、
+WebSocket、SSE 和上传。
 
 健康检查与指标使用独立的 `9090` 管理端口。Console Service 只暴露 `8080`，因此
 Console 的通配 Ingress 路由无法访问或遮蔽管理端点。
+
+### API 请求路径兼容
+
+请求转发到上游前，如果路径尚未以完整的 `basePath` 开头，并且包含 `/kapis/`
+或 `/apis/`，Sidecar 会在路径前添加 `basePath`。查询参数保持不变；
+`basePath` 为空时不修改请求。
+
+```text
+/apis/apps/v1/deployments?limit=20
+        ->
+{basePath}/apis/apps/v1/deployments?limit=20
+```
 
 ## 重写范围
 

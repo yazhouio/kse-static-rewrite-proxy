@@ -2,7 +2,9 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A temporary, independently deployable Pingora sidecar for KSE Console. It forwards every Console request to the BFF unchanged, except for narrowly scoped stream rewrites in configured extension assets.
+A temporary, independently deployable Pingora sidecar for KSE Console. It forwards
+Console requests to the BFF, adds a missing `basePath` to API request paths, and
+performs narrowly scoped stream rewrites in configured extension assets.
 
 ## Request flow
 
@@ -15,9 +17,25 @@ Pingora sidecar :8080 ----> KSE Console BFF 127.0.0.1:8000
        +--- admin :9090 (Pod probes / Prometheus only)
 ```
 
-The Console Service must target sidecar port `8080`; the BFF remains an internal same-Pod upstream. The sidecar preserves the request path, host, cookies, login/logout behavior, APIs, WebSockets, SSE, and uploads.
+The Console Service must target sidecar port `8080`; the BFF remains an internal
+same-Pod upstream. The sidecar preserves the host, cookies, login/logout
+behavior, WebSockets, SSE, uploads, and request paths except for the API path
+compatibility rule below.
 
 Health and metrics use a separate admin listener on `9090`. The Console Service exposes only `8080`, so wildcard Console Ingress routes cannot reach or shadow the admin endpoints.
+
+### API request path compatibility
+
+Before forwarding a request, the sidecar prefixes `basePath` when the path does
+not already start with that complete path prefix and contains `/kapis/` or
+`/apis/`. The query string is preserved. If `basePath` is empty, the request is
+unchanged.
+
+```text
+/apis/apps/v1/deployments?limit=20
+        ->
+{basePath}/apis/apps/v1/deployments?limit=20
+```
 
 ## Rewrite scope
 

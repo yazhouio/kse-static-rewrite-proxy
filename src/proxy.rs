@@ -142,6 +142,28 @@ impl KseRewriteProxy {
     }
 }
 
+fn api_uri_with_base_path(
+    uri: &http::Uri,
+    base_path: &str,
+) -> Result<Option<http::Uri>, http::uri::InvalidUri> {
+    let path = uri.path();
+    let already_scoped = path == base_path
+        || path
+            .strip_prefix(base_path)
+            .is_some_and(|suffix| suffix.starts_with('/'));
+    if base_path.is_empty()
+        || already_scoped
+        || !(path.contains("/kapis/") || path.contains("/apis/"))
+    {
+        return Ok(None);
+    }
+
+    let path_and_query = uri
+        .path_and_query()
+        .map_or(path, http::uri::PathAndQuery::as_str);
+    format!("{base_path}{path_and_query}").parse().map(Some)
+}
+
 #[async_trait]
 impl ProxyHttp for KseRewriteProxy {
     type CTX = RequestContext;
@@ -236,6 +258,17 @@ impl ProxyHttp for KseRewriteProxy {
         ctx: &mut Self::CTX,
     ) -> Result<()> {
         upstream_request.insert_header("x-request-id", ctx.request_id.clone())?;
+        if let Some(uri) = api_uri_with_base_path(&upstream_request.uri, self.config.base_path())
+            .map_err(|cause| {
+                Error::because(
+                    ErrorType::InternalError,
+                    "failed to prefix API request base path",
+                    cause,
+                )
+            })?
+        {
+            upstream_request.set_uri(uri);
+        }
         if let RewriteDecision::Rewrite { profile, .. } = ctx.decision {
             upstream_request.insert_header(ACCEPT_ENCODING, "identity")?;
             if should_force_unconditional_full_response(profile) {
@@ -577,6 +610,66 @@ fn new_request_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefixes_unscoped_api_requests_before_forwarding() {
+        for (incoming, expected) in [
+            (
+                "/kapis/tenant.kubesphere.io/v1alpha2/workspaces",
+                "/regions/region:shenzhen/kapis/tenant.kubesphere.io/v1alpha2/workspaces",
+            ),
+            (
+                "/apis/apps/v1/deployments?limit=20&continue=next",
+                "/regions/region:shenzhen/apis/apps/v1/deployments?limit=20&continue=next",
+            ),
+            (
+                "/clusters/host/apis/apps/v1/deployments",
+                "/regions/region:shenzhen/clusters/host/apis/apps/v1/deployments",
+            ),
+            (
+                "/assets/apis/client.js",
+                "/regions/region:shenzhen/assets/apis/client.js",
+            ),
+        ] {
+            let incoming: http::Uri = incoming.parse().unwrap();
+
+            assert_eq!(
+                api_uri_with_base_path(&incoming, "/regions/region:shenzhen")
+                    .expect("the configured base path and incoming URI are valid")
+                    .as_ref()
+                    .map(http::Uri::to_string),
+                Some(expected.to_owned())
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_already_scoped_and_non_api_requests_unchanged() {
+        for incoming in [
+            "/regions/region:shenzhen/kapis/tenant.kubesphere.io/v1alpha2/workspaces",
+            "/regions/region:shenzhen/apis/apps/v1/deployments",
+            "/regions/region:shenzhen",
+            "/apis",
+            "/kapis",
+            "/api/v1/namespaces",
+        ] {
+            let incoming: http::Uri = incoming.parse().unwrap();
+
+            assert_eq!(
+                api_uri_with_base_path(&incoming, "/regions/region:shenzhen").unwrap(),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn leaves_api_requests_unchanged_when_base_path_is_empty() {
+        let incoming: http::Uri = "/kapis/tenant.kubesphere.io/v1alpha2/workspaces"
+            .parse()
+            .unwrap();
+
+        assert_eq!(api_uri_with_base_path(&incoming, "").unwrap(), None);
+    }
 
     #[test]
     fn content_type_allows_only_supported_utf8_text() {
